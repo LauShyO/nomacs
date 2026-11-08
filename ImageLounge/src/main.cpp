@@ -28,6 +28,8 @@
 #ifdef Q_OS_WIN
 #include "shlwapi.h"
 #pragma comment(lib, "shlwapi.lib")
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 
 #if defined(_MSC_BUILD) && !defined(DK_INSTALL) // only final release will be compiled without a CMD
 #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
@@ -357,6 +359,22 @@ int main(int argc, char *argv[])
 #ifdef Q_OS_WIN
     // hide white flash when window first appears
     w->setWindowOpacity(0.0);
+#endif
+
+#ifdef Q_OS_WIN
+    // local patch: WinUI themes get a dark/light title bar matching the theme
+    // and the Windows 11 Mica system backdrop on the main window (never on the
+    // frameless window, which must stay truly transparent)
+    {
+        const QString themeName = nmc::DkThemeManager::instance().getCurrentThemeName();
+        if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
+            const HWND hwnd = reinterpret_cast<HWND>(w->winId());
+            const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
+            DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+            const int backdropType = 2 /* DWMSBT_MAINWINDOW (Mica) */;
+            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+        }
+    }
 #endif
 
     if (nmc::DkSettings::modeIsFullscreen(mode))

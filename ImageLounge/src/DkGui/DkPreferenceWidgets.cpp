@@ -240,12 +240,20 @@ void DkGroupWidget::createLayout()
 
     // we create a content widget to have control over the margins
     auto *contentWidget = new QWidget(this);
+    contentWidget->setObjectName("DkGroupContent");
     mContentLayout = new QVBoxLayout(contentWidget);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(titleLabel);
     layout->addWidget(contentWidget);
+
+    // local patch: WinUI themes draw the group content as a rounded card,
+    // so the rows need inner padding instead of touching the card border
+    if (DkThemeManager::instance().getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive)) {
+        mContentLayout->setContentsMargins(16, 10, 16, 12);
+        layout->setSpacing(2);
+    }
 }
 
 void DkGroupWidget::addWidget(QWidget *widget)

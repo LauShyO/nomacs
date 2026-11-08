@@ -32,6 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "nmc_config.h"
 
+class QMenu;
 class QStyle;
 
 namespace nmc
@@ -103,6 +104,13 @@ public:
      * @brief reload current theme and make it active
      */
     void applyTheme();
+
+    /**
+     * @brief local patch: prepare a menu (and its submenus) for the current theme.
+     * WinUI themes need translucent, frameless menu windows so the stylesheet's
+     * rounded corners show the desktop instead of an opaque square frame.
+     */
+    void styleMenuForTheme(QMenu *menu) const;
 
     /**
      * @brief restyle certain widgets quickly without reapplying the theme

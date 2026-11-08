@@ -32,6 +32,7 @@
 #include "DkMenu.h"
 #include "DkSettings.h"
 #include "DkStatusBar.h"
+#include "DkThemeManager.h"
 #include "DkToolbars.h"
 #include "DkUtils.h"
 
@@ -757,6 +758,12 @@ void DkActionManager::createMenus(QWidget *parent)
     createSyncMenu(parent);
     createHelpMenu(parent);
     createContextMenu(parent);
+
+    // local patch: prepare all menus for the current theme (WinUI rounded menus)
+    auto &themeManager = DkThemeManager::instance();
+    const QMenu *menus[] = {mFileMenu, mOpenWithMenu, mSortMenu, mViewMenu, mEditMenu, mManipulatorMenu, mToolsMenu, mPanelMenu, mHelpMenu, mSyncMenu, mContextMenu};
+    for (const QMenu *menu : menus)
+        themeManager.styleMenuForTheme(const_cast<QMenu *>(menu));
 }
 
 void DkActionManager::init()

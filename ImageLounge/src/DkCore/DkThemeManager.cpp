@@ -34,6 +34,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QApplication>
 // #include <QDebug>
 #include <QDir>
+#include <QMenu>
+#include <QSettings>
 #include <QStyle>
 #include <QStyleFactory>
 #include <QStyleHints>
@@ -791,9 +793,33 @@ void DkThemeManager::applyTheme()
 
     mOurPaletteChange = false;
 
+    // local patch: (re)prepare all existing menus for the (new) theme
+    for (QWidget *widget : qApp->allWidgets()) {
+        if (auto *menu = qobject_cast<QMenu *>(widget))
+            styleMenuForTheme(menu);
+    }
+
     qInfo() << "theme applied in:" << dt;
 
     emit themeApplied();
+}
+
+void DkThemeManager::styleMenuForTheme(QMenu *menu) const
+{
+    if (!menu)
+        return;
+
+    // local patch: the WinUI themes draw menus with rounded corners; the menu
+    // window must be translucent + frameless or the corners stay opaque squares
+    const bool winUi = getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive);
+    menu->setAttribute(Qt::WA_TranslucentBackground, winUi);
+    if (winUi) {
+        menu->setWindowFlags(menu->windowFlags() | Qt::FramelessWindowHint);
+        for (QAction *action : menu->actions()) {
+            if (action->menu())
+                styleMenuForTheme(action->menu());
+        }
+    }
 }
 
 void unpolishTree(QObject *object)
@@ -1180,8 +1206,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
     QColor highlightAlpha = d.highlightColor;
     highlightAlpha.setAlpha(150);
 
+    // local patch: ACCENT_COLOR follows the Windows system accent color
+    // (HKCU\...\DWM\AccentColor is stored as ABGR), WinUI blue elsewhere
+    QColor accentColor(0, 103, 192);
+#ifdef Q_OS_WIN
+    {
+        const QSettings dwmSettings(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\DWM"), QSettings::NativeFormat);
+        bool ok = false;
+        const uint accentDword = dwmSettings.value(QStringLiteral("AccentColor")).toUInt(&ok);
+        if (ok)
+            accentColor = QColor(int(accentDword & 0xFF), int((accentDword >> 8) & 0xFF), int((accentDword >> 16) & 0xFF));
+    }
+#endif
+
     // note the order, BACKGROUND_COLOR must follow *_BACKGROUND_COLOR
-    return {{"HUD_HIGHLIGHT_COLOR", d.hudHighlightColor},
+    return {{"ACCENT_COLOR", accentColor},
+            {"HUD_HIGHLIGHT_COLOR", d.hudHighlightColor},
             {"HUD_HIGHLIGHT_LIGHT", d.hudHighlightLightColor},
             {"HIGHLIGHT_COLOR", d.highlightColor},
             {"HIGHLIGHT_LIGHT", highlightAlpha},

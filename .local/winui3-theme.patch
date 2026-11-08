@@ -1,0 +1,2163 @@
+diff --git a/ImageLounge/src/DkCore/DkActionManager.cpp b/ImageLounge/src/DkCore/DkActionManager.cpp
+index 3da672a..ac8709f 100644
+--- a/ImageLounge/src/DkCore/DkActionManager.cpp
++++ b/ImageLounge/src/DkCore/DkActionManager.cpp
+@@ -32,6 +32,7 @@
+ #include "DkMenu.h"
+ #include "DkSettings.h"
+ #include "DkStatusBar.h"
++#include "DkThemeManager.h"
+ #include "DkToolbars.h"
+ #include "DkUtils.h"
+ 
+@@ -757,6 +758,12 @@ void DkActionManager::createMenus(QWidget *parent)
+     createSyncMenu(parent);
+     createHelpMenu(parent);
+     createContextMenu(parent);
++
++    // local patch: prepare all menus for the current theme (WinUI rounded menus)
++    auto &themeManager = DkThemeManager::instance();
++    const QMenu *menus[] = {mFileMenu, mOpenWithMenu, mSortMenu, mViewMenu, mEditMenu, mManipulatorMenu, mToolsMenu, mPanelMenu, mHelpMenu, mSyncMenu, mContextMenu};
++    for (const QMenu *menu : menus)
++        themeManager.styleMenuForTheme(const_cast<QMenu *>(menu));
+ }
+ 
+ void DkActionManager::init()
+diff --git a/ImageLounge/src/DkCore/DkThemeManager.cpp b/ImageLounge/src/DkCore/DkThemeManager.cpp
+index 5f38608..feac01a 100644
+--- a/ImageLounge/src/DkCore/DkThemeManager.cpp
++++ b/ImageLounge/src/DkCore/DkThemeManager.cpp
+@@ -34,6 +34,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ #include <QApplication>
+ // #include <QDebug>
+ #include <QDir>
++#include <QMenu>
++#include <QSettings>
+ #include <QStyle>
+ #include <QStyleFactory>
+ #include <QStyleHints>
+@@ -791,11 +793,35 @@ void DkThemeManager::applyTheme()
+ 
+     mOurPaletteChange = false;
+ 
++    // local patch: (re)prepare all existing menus for the (new) theme
++    for (QWidget *widget : qApp->allWidgets()) {
++        if (auto *menu = qobject_cast<QMenu *>(widget))
++            styleMenuForTheme(menu);
++    }
++
+     qInfo() << "theme applied in:" << dt;
+ 
+     emit themeApplied();
+ }
+ 
++void DkThemeManager::styleMenuForTheme(QMenu *menu) const
++{
++    if (!menu)
++        return;
++
++    // local patch: the WinUI themes draw menus with rounded corners; the menu
++    // window must be translucent + frameless or the corners stay opaque squares
++    const bool winUi = getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive);
++    menu->setAttribute(Qt::WA_TranslucentBackground, winUi);
++    if (winUi) {
++        menu->setWindowFlags(menu->windowFlags() | Qt::FramelessWindowHint);
++        for (QAction *action : menu->actions()) {
++            if (action->menu())
++                styleMenuForTheme(action->menu());
++        }
++    }
++}
++
+ void unpolishTree(QObject *object)
+ {
+     // find widgets that need their style recomputed
+@@ -1180,8 +1206,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
+     QColor highlightAlpha = d.highlightColor;
+     highlightAlpha.setAlpha(150);
+ 
++    // local patch: ACCENT_COLOR follows the Windows system accent color
++    // (HKCU\...\DWM\AccentColor is stored as ABGR), WinUI blue elsewhere
++    QColor accentColor(0, 103, 192);
++#ifdef Q_OS_WIN
++    {
++        const QSettings dwmSettings(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\DWM"), QSettings::NativeFormat);
++        bool ok = false;
++        const uint accentDword = dwmSettings.value(QStringLiteral("AccentColor")).toUInt(&ok);
++        if (ok)
++            accentColor = QColor(int(accentDword & 0xFF), int((accentDword >> 8) & 0xFF), int((accentDword >> 16) & 0xFF));
++    }
++#endif
++
+     // note the order, BACKGROUND_COLOR must follow *_BACKGROUND_COLOR
+-    return {{"HUD_HIGHLIGHT_COLOR", d.hudHighlightColor},
++    return {{"ACCENT_COLOR", accentColor},
++            {"HUD_HIGHLIGHT_COLOR", d.hudHighlightColor},
+             {"HUD_HIGHLIGHT_LIGHT", d.hudHighlightLightColor},
+             {"HIGHLIGHT_COLOR", d.highlightColor},
+             {"HIGHLIGHT_LIGHT", highlightAlpha},
+diff --git a/ImageLounge/src/DkCore/DkThemeManager.h b/ImageLounge/src/DkCore/DkThemeManager.h
+index 573c07c..fa18450 100644
+--- a/ImageLounge/src/DkCore/DkThemeManager.h
++++ b/ImageLounge/src/DkCore/DkThemeManager.h
+@@ -32,6 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+ #include "nmc_config.h"
+ 
++class QMenu;
+ class QStyle;
+ 
+ namespace nmc
+@@ -104,6 +105,13 @@ public:
+      */
+     void applyTheme();
+ 
++    /**
++     * @brief local patch: prepare a menu (and its submenus) for the current theme.
++     * WinUI themes need translucent, frameless menu windows so the stylesheet's
++     * rounded corners show the desktop instead of an opaque square frame.
++     */
++    void styleMenuForTheme(QMenu *menu) const;
++
+     /**
+      * @brief restyle certain widgets quickly without reapplying the theme
+      */
+diff --git a/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp b/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp
+index d33cb69..f65de7c 100644
+--- a/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp
++++ b/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp
+@@ -240,12 +240,20 @@ void DkGroupWidget::createLayout()
+ 
+     // we create a content widget to have control over the margins
+     auto *contentWidget = new QWidget(this);
++    contentWidget->setObjectName("DkGroupContent");
+     mContentLayout = new QVBoxLayout(contentWidget);
+ 
+     auto *layout = new QVBoxLayout(this);
+     layout->setContentsMargins(0, 0, 0, 0);
+     layout->addWidget(titleLabel);
+     layout->addWidget(contentWidget);
++
++    // local patch: WinUI themes draw the group content as a rounded card,
++    // so the rows need inner padding instead of touching the card border
++    if (DkThemeManager::instance().getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive)) {
++        mContentLayout->setContentsMargins(16, 10, 16, 12);
++        layout->setSpacing(2);
++    }
+ }
+ 
+ void DkGroupWidget::addWidget(QWidget *widget)
+diff --git a/ImageLounge/src/img/switch-off-disabled.svg b/ImageLounge/src/img/switch-off-disabled.svg
+new file mode 100644
+index 0000000..beeeff5
+--- /dev/null
++++ b/ImageLounge/src/img/switch-off-disabled.svg
+@@ -0,0 +1,4 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
++  <rect x="0.75" y="0.75" width="38.5" height="18.5" rx="9.25" fill="none" stroke="#c8c8c8" stroke-width="1.5"/>
++  <circle cx="10" cy="10" r="5.5" fill="#c8c8c8"/>
++</svg>
+diff --git a/ImageLounge/src/img/switch-off.svg b/ImageLounge/src/img/switch-off.svg
+new file mode 100644
+index 0000000..07b41b8
+--- /dev/null
++++ b/ImageLounge/src/img/switch-off.svg
+@@ -0,0 +1,4 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
++  <rect x="0.75" y="0.75" width="38.5" height="18.5" rx="9.25" fill="none" stroke="#9b9b9b" stroke-width="1.5"/>
++  <circle cx="10" cy="10" r="5.5" fill="#9b9b9b"/>
++</svg>
+diff --git a/ImageLounge/src/img/switch-on-dark.svg b/ImageLounge/src/img/switch-on-dark.svg
+new file mode 100644
+index 0000000..9a1cfd4
+--- /dev/null
++++ b/ImageLounge/src/img/switch-on-dark.svg
+@@ -0,0 +1,4 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
++  <rect x="0" y="0" width="40" height="20" rx="10" fill="#4cc2ff"/>
++  <circle cx="30" cy="10" r="5.5" fill="#ffffff"/>
++</svg>
+diff --git a/ImageLounge/src/img/switch-on-disabled.svg b/ImageLounge/src/img/switch-on-disabled.svg
+new file mode 100644
+index 0000000..062b9f2
+--- /dev/null
++++ b/ImageLounge/src/img/switch-on-disabled.svg
+@@ -0,0 +1,4 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
++  <rect x="0" y="0" width="40" height="20" rx="10" fill="#c8c8c8"/>
++  <circle cx="30" cy="10" r="5.5" fill="#ffffff"/>
++</svg>
+diff --git a/ImageLounge/src/img/switch-on.svg b/ImageLounge/src/img/switch-on.svg
+new file mode 100644
+index 0000000..bd4c8ee
+--- /dev/null
++++ b/ImageLounge/src/img/switch-on.svg
+@@ -0,0 +1,4 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">
++  <rect x="0" y="0" width="40" height="20" rx="10" fill="#0067c0"/>
++  <circle cx="30" cy="10" r="5.5" fill="#ffffff"/>
++</svg>
+diff --git a/ImageLounge/src/main.cpp b/ImageLounge/src/main.cpp
+index 693a0ae..508a72e 100644
+--- a/ImageLounge/src/main.cpp
++++ b/ImageLounge/src/main.cpp
+@@ -28,6 +28,8 @@
+ #ifdef Q_OS_WIN
+ #include "shlwapi.h"
+ #pragma comment(lib, "shlwapi.lib")
++#include <dwmapi.h>
++#pragma comment(lib, "dwmapi.lib")
+ 
+ #if defined(_MSC_BUILD) && !defined(DK_INSTALL) // only final release will be compiled without a CMD
+ #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
+@@ -359,6 +361,22 @@ int main(int argc, char *argv[])
+     w->setWindowOpacity(0.0);
+ #endif
+ 
++#ifdef Q_OS_WIN
++    // local patch: WinUI themes get a dark/light title bar matching the theme
++    // and the Windows 11 Mica system backdrop on the main window (never on the
++    // frameless window, which must stay truly transparent)
++    {
++        const QString themeName = nmc::DkThemeManager::instance().getCurrentThemeName();
++        if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
++            const HWND hwnd = reinterpret_cast<HWND>(w->winId());
++            const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
++            DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
++            const int backdropType = 2 /* DWMSBT_MAINWINDOW (Mica) */;
++            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
++        }
++    }
++#endif
++
+     if (nmc::DkSettings::modeIsFullscreen(mode))
+         w->showFullScreen();
+     else if (w->windowState() & Qt::WindowMaximized)
+diff --git a/ImageLounge/src/nomacs.qrc b/ImageLounge/src/nomacs.qrc
+index d7d6386..3d1d5cc 100644
+--- a/ImageLounge/src/nomacs.qrc
++++ b/ImageLounge/src/nomacs.qrc
+@@ -33,6 +33,11 @@
+         <file>img/scroll-to-current.svg</file>
+         <file>img/export.svg</file>
+         <file>img/open.svg</file>
++        <file>img/switch-off.svg</file>
++        <file>img/switch-on.svg</file>
++        <file>img/switch-on-dark.svg</file>
++        <file>img/switch-off-disabled.svg</file>
++        <file>img/switch-on-disabled.svg</file>
+         <file>img/thumbs-move.svg</file>
+         <file>img/tp-pattern.png</file>
+         <file>img/location.svg</file>
+diff --git a/ImageLounge/src/themes/WinUI-Dark.css b/ImageLounge/src/themes/WinUI-Dark.css
+new file mode 100644
+index 0000000..266d4dc
+--- /dev/null
++++ b/ImageLounge/src/themes/WinUI-Dark.css
+@@ -0,0 +1,954 @@
++
++/* nomacs-color BACKGROUND_COLOR     #202020      */
++/* nomacs-color FOREGROUND_COLOR     #f5f5f5      */
++/* nomacs-color ICON_COLOR           #f5f5f5      */
++/* nomacs-color HIGHLIGHT_COLOR      #4cc2ff   */
++/* nomacs-color HUD_BACKGROUND_COLOR #aa000000 */
++/* nomacs-color HUD_FOREGROUND_COLOR #ddd      */
++/* nomacs-color SLIDESHOW_COLOR      #202020      */
++
++/* nomacs-include ":/nomacs/stylesheet.css" */
++
++/* all widgets */
++* {
++    border: none;
++    color: FOREGROUND_COLOR;
++    background-color: none; /* if we missed something it takes the parent bg */
++    selection-color: #fff;
++    selection-background-color: HIGHLIGHT_COLOR;
++}
++
++*:disabled {
++    color: rgba(255,255,255,100);
++}
++
++/* buttons */
++QPushButton {
++    border: 1px solid rgba(255,255,255,30);
++    padding: 4px 20px;
++}
++
++QPushButton:flat,
++QPushButton:flat:disabled {
++    border: none;
++}
++
++QPushButton:default {
++    background-color: rgba(255,255,255,30);
++}
++
++QPushButton:disabled {
++    border: 1px solid rgba(255,255,255,100);
++}
++
++QPushButton:default:disabled {
++    color: rgba(255,255,255,75);
++}
++
++QPushButton:pressed {
++    background-color: rgba(255,255,255,80);
++}
++
++nmc--DkBatchTabButton {
++    min-width: 250px;
++    padding: 10px 20px;
++    padding-bottom: 30px;
++}
++
++QPushButton#DkTabEntryWidget:checked,
++nmc--DkBatchTabButton:checked {
++    background-color: rgba(0, 0, 0, 40);
++    border: none;    /* clear border styles first */
++    border-left: 4px solid HIGHLIGHT_COLOR;
++}
++
++/* push buttons in overlays are broken by default pushbutton */
++nmc--DkCommentWidget QPushButton {
++    padding: 4px;
++}
++
++QCheckBox::indicator {
++    background-color: rgba(255,255,255,40);
++/* nomacs-if-qt-gte-6,0,0 */
++    width:  16px;
++    height: 16px;
++/* nomacs-else */
++    width:  1em;
++    height: 1em;
++/* nomacs-endif */
++    border: 1px transparent rgba(0,0,0,0);
++}
++
++QCheckBox::indicator:checked {
++    image: nomacsColorize(:/nomacs/img/check.svg);
++}
++
++QRadioButton::indicator {
++    background-color: rgba(255,255,255,40);
++/* nomacs-if-qt-gte-6,0,0 */
++   width: 16px;
++   height: 16px;
++   border-radius: 8px;
++/* nomacs-else */
++   width:  1em;
++   height: 1em;
++   border-radius:0.49em;
++/* nomacs-endif */
++   border: 1px transparent rgba(0,0,0,0);
++}
++
++QRadioButton::indicator:checked
++{
++    image: nomacsColorize(:/nomacs/img/radio-checked.svg);
++}
++
++QCheckBox::indicator:pressed,
++QRadioButton::indicator:pressed {
++    background-color: rgba(255,255,255,80);
++}
++
++QDialogButtonBox {
++    dialogbuttonbox-buttons-have-icons: 0;
++}
++
++QGroupBox {
++    border: 1px solid rgba(255,255,255,30); /* == button border */
++    margin-top: 0.5em; /* center title with top border */
++    margin-left: 3px; /* line up left border with title */
++    margin-right: 3px; /* match left */
++    margin-bottom: 1px; /* top margin is large, give back space at the bottom */
++    padding: 6px 4px 4px 4px; /* extra padding at the top for the title */
++}
++
++QGroupBox::title {
++    subcontrol-origin: margin;
++    subcontrol-position: top left;
++    padding: 0; /* place as far left as we can */
++    margin: 0;
++}
++
++QHeaderView,
++QHeaderView::section {
++    background-color: rgba(0, 0, 0, 30);
++}
++
++QHeaderView::section {
++    padding: 2px;
++    border: none;
++    border-right: 1px solid rgba(0,0,0,90);
++}
++
++QAbstractItemView {
++    border: 1px solid rgba(0,0,0,90);
++}
++
++QToolTip {
++    color: BACKGROUND_COLOR;
++    background-color: FOREGROUND_COLOR;
++    opacity: 223;
++    border: 1px solid rgba(0,0,0,90);
++}
++
++QComboBox {
++    padding-left: 4px;  /* fixes 0px padding on Breeze */
++}
++
++QTextEdit,
++QLineEdit,
++QDoubleSpinBox,
++QSpinBox {
++    padding-left: 2px; /* match QComboBox; for some reason actual padding is 2px more */
++}
++
++QComboBox QListView::item {
++    padding: 2px;
++}
++
++QComboBox QListView::item:hover {
++    color: none;
++    background-color: none;
++}
++
++QComboBox::drop-down {
++    image: nomacsColorize(:/nomacs/img/down.svg);
++    subcontrol-position: right center;
++    border: none;
++    background-color: none;
++    width:  1.0em;  /* == spinbox arrow */
++    height: 0.5em;
++}
++
++QTextEdit,
++QLineEdit,
++QDoubleSpinBox,
++QSpinBox,
++QComboBox {
++    background-color: nomacsBlend(BACKGROUND_COLOR,255,255,255,10);
++    border: 1px solid rgba(0,0,0,90);
++}
++
++QTextEdit:disabled,
++QLineEdit:disabled,
++QDoubleSpinBox:disabled,
++QSpinBox:disabled,
++QComboBox:disabled {
++    color: rgba(255,255,255,40);
++    background-color: rgba(255,255,255,60);
++    border: 1px solid rgba(0,0,0,90);
++}
++
++/* nomacs-if-qt-gte-6,5,0 */
++QLineEdit,
++QTextEdit,
++QComboBox {
++    placeholder-text-color: rgba(255,255,255,80);
++}
++/* nomacs-endif */
++
++QSpinBox::up-button,
++QSpinBox::down-button,
++QDoubleSpinBox::up-button,
++QDoubleSpinBox::down-button {
++    background-color: rgba(255,255,255,30);
++    width:1.0em; /* height defaults to 1/2 */
++}
++
++QSpinBox::up-button:pressed,
++QSpinBox::down-button:pressed,
++QDoubleSpinBox::up-button:pressed,
++QDoubleSpinBox::down-button:pressed {
++    background-color: rgba(255,255,255,80);
++}
++
++QSpinBox::up-arrow,
++QDoubleSpinBox::up-arrow {
++    image: nomacsColorize(:/nomacs/img/up.svg);
++    width:1.0em;
++    height:0.5em;
++}
++
++QSpinBox::down-arrow,
++QDoubleSpinBox::down-arrow {
++    image: nomacsColorize(:/nomacs/img/down.svg);
++    width:1.0em;
++    height:0.5em;
++}
++
++QSpinBox::up-arrow:disabled,
++QSpinBox::up-arrow:off,
++QDoubleSpinBox::up-arrow:disabled,
++QDoubleSpinBox::up-arrow:off {
++    image: nomacsColorize(:/nomacs/img/up.svg,nomacsBlend(BACKGROUND_COLOR,255,255,255,100));
++}
++
++QSpinBox::down-arrow:disabled,
++QSpinBox::down-arrow:off,
++QDoubleSpinBox::down-arrow:disabled,
++QDoubleSpinBox::down-arrow:off {
++    image: nomacsColorize(:/nomacs/img/down.svg,nomacsBlend(BACKGROUND_COLOR,255,255,255,100));
++}
++
++QToolBar {
++    border-bottom: 1px solid rgba(0,0,0,90);
++    padding: 4px;
++    spacing: 4px;
++}
++
++QToolBar::handle {
++    background-color: rgba(255,255,255,40);
++}
++
++QToolBar::separator {
++    width:0px;
++}
++
++QTabBar::close-button {
++    image: nomacsColorize(:/nomacs/img/close.svg);
++}
++
++QTabBar::close-button:hover {
++    image: nomacsColorize(:/nomacs/img/close-hover.svg);
++}
++
++QTabBar::tab {
++    color: FOREGROUND_COLOR;
++    background-color: nomacsBlend(BACKGROUND_COLOR,255,255,255,40);
++    padding: 4px 20px; /* same as button */
++    border-bottom: 1px solid rgba(255,255,255,80);
++    border-left: 1px solid rgba(0,0,0,90);
++}
++
++QTabBar::tab::selected {
++    background-color: BACKGROUND_COLOR; /* seamless with content bg */
++    border: none;
++    border-top: 1px solid rgba(255,255,255,80);
++    border-left: 1px solid rgba(255,255,255,80);
++    border-right: 1px solid rgba(255,255,255,40);
++}
++
++QTabBar QToolButton {
++    background-color: BACKGROUND_COLOR;
++}
++/* note: we have to blend the color because the button overlaps tabs,
++         which would show through otherwise */
++QTabBar QToolButton:hover:!pressed {
++    background-color: nomacsBlend(BACKGROUND_COLOR,255,255,255,40);
++}
++
++QTabBar QToolButton:pressed {
++    background-color: nomacsBlend(BACKGROUND_COLOR,255,255,255,80);
++}
++
++QTabBar QToolButton:disabled {
++    color: nomacsBlend(BACKGROUND_COLOR,255,255,255,100);
++}
++
++/*
++QTabBar QToolButton#ScrollLeftButton {
++    background-color: BACKGROUND_COLOR;
++}
++QTabBar QToolButton#ScrollRightButton {
++    background-color: BACKGROUND_COLOR;
++}*/
++
++nmc--DkThumbsView {
++    background-color: rgba(255,255,255,40);
++}
++
++nmc--DkBatchWidget,
++nmc--DkPreferenceWidget,
++nmc--DkResizableScrollArea, /* prefs, batch */
++nmc--DkResizableScrollArea > QWidget > QWidget, /* prefs, batch */
++QGraphicsView#DkBaseViewPortDefaultColor, /* image viewer background */
++QWidget#DkPreferenceContent,
++QDockWidget,
++QDockWidget > QWidget,         /* qt internal content widget; but not enough */
++QDockWidget > QWidget QFrame,  /* not ideal, but scroll area selector doesn't work */
++QMainWindow,
++QDialog,
++QToolBar,
++QMenu,
++QMenuBar,
++QTabBar,
++QTabWidget,
++QAbstractItemView {
++    background-color: BACKGROUND_COLOR;
++}
++
++QDockWidget::title {
++    background-color: rgba(255,255,255,40);
++}
++
++/* frameless fixups we don't want in normal mode */
++nmc--DkNoMacsFrameless nmc--DkBatchWidget:separator,
++nmc--DkNoMacsFrameless::separator,
++nmc--DkNoMacsFrameless QDockWidget::title {
++    background-color: BACKGROUND_COLOR;
++}
++
++QAbstractItemView {
++    alternate-background-color: rgba(255,255,255,10);
++    show-decoration-selected: 1;
++}
++
++QAbstractItemView::item,
++QAbstractItemView::item:alternate {
++    background-color: none; /* use row color */
++    alternate-background-color: transparent; /* "none" doesn't work on Qt6/Windows */
++}
++
++/* neutral colors for menus, hovers, toggles */
++QPushButton:hover:!pressed,
++QToolButton:hover:!pressed,
++QMenu::icon:checked,
++QMenuBar::item:selected,
++QMenu::item:selected,
++QMenu::item:selected:checked,
++QAbstractItemView::item:hover {
++    color: FOREGROUND_COLOR;
++    background-color: rgba(255,255,255,40);
++}
++
++/* KDE: buttons could be dark or light depending on system theme, so put them on gray */
++/* NOTE: this is resolved by QStyleHints::setColorScheme() in 6.8.0 in at least KDE 6.2.4 */
++/* nomacs-if-qt-lt-6,8,0 */
++KFileWidget QToolBar {
++  background-color: rgba(255,255,255,128);
++}
++/* nomacs-endif */
++
++/* KDE: text color cannot be set in hover state for some reason, so disable hover state */
++KDirOperatorDetailView::item:hover {
++  color: FOREGROUND_COLOR;
++  background-color: none;
++}
++
++QToolButton:checked,
++QToolButton:pressed {
++    background-color: rgba(255,255,255,80);
++}
++
++/* neutral colors for static selections */
++QDockWidget QAbstractItemView {
++    selection-color: FOREGROUND_COLOR;
++    selection-background-color: rgba(255,255,255,40);
++}
++
++/* highlight focused widgets */
++QComboBox:selected {
++    border: 1px solid HIGHLIGHT_COLOR;
++}
++
++QMenu {
++    /* would like menu bg to be different but that isn't possible w/blending */
++    border: solid rgba(255,255,255,30);
++    border-width: 1px 1px 1px 1px;
++}
++
++QMenu::item:checked {
++    color: FOREGROUND_COLOR;
++}
++
++QMenu::item:checked:disabled {
++    color: rgba(255,255,255,100);
++}
++
++QMenu::separator {
++    border-top: 1px solid rgba(0,0,0,90);
++}
++
++/* QMenu styling breaks padding, the fix is different on 5/6 */
++
++/* nomacs-if-qt-gte-6,0,0 */
++    QMenu::icon {
++        right:-5px;
++    }
++/* nomacs-else */
++    QMenu::item {
++        padding: 4px 10px 4px 14px;
++    }
++    QMenu::icon {
++        right:-10px;
++    }
++/* nomacs-endif */
++
++/* scrollbars */
++QScrollBar:vertical { background-color: rgba(255,255,255,0); width: 11px; margin: 0 0 0 0;}
++QScrollBar::handle:vertical { background-color: rgba(255,255,255,60); min-height: 0px;}
++QScrollBar::add-line:vertical { height: 0px; }
++QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background-color: rgba(255,255,255,0); width: 1px;}
++QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
++
++QScrollBar:horizontal {background-color: rgba(255,255,255,0); height: 11px; margin: 0 0 0 0;}
++QScrollBar::handle:horizontal {background-color: rgba(255,255,255,60); min-width: 0px;}
++QScrollBar::add-line:horizontal {width: 0px;}
++QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {background-color: rgba(255,255,255,0); height: 1px;}
++QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {width: 0;}
++
++nmc--DkFolderScrollBar:handle {
++    background-color: rgba(255,255,255,128);
++}
++
++QDockWidget,
++QLabel#batchContentTitle,
++QLabel#batchContentInfo,
++QLabel#statusBarLabel,
++QPushButton#infoButton,
++QListView#resultListView[empty="true"] {
++    color: FOREGROUND_COLOR;
++}
++
++QListWidget#historyList::item:disabled {
++    color: rgba(255,255,255,100);
++}
++
++QLabel#subTitle,
++nmc--DkGroupWidget QCheckBox,
++nmc--DkGroupWidget QRadioButton,
++nmc--DkGroupWidget QLineEdit,
++nmc--DkGroupWidget QLabel {
++    color: FOREGROUND_COLOR;
++}
++
++nmc--DkProfileSummaryWidget {
++    background-color: rgba(255,255,255,40);
++}
++
++/* recent files */
++nmc--DkRecentFilesWidget QScrollArea > QWidget > QWidget {
++    border: none;
++    background-color: BACKGROUND_COLOR;
++}
++
++nmc--DkRecentDirWidget {
++    background-color: rgba(0, 0, 0, 60);
++    border: 1px solid rgba(0, 0, 0, 80);
++}
++
++nmc--DkRecentDirWidget:hover {
++    background-color: rgba(0, 0, 0, 100);
++    border: 1px solid rgba(0, 0, 0, 120);
++}
++
++nmc--DkRecentDirWidget QToolButton {
++    selection-background-color: none;
++}
++
++nmc--DkRecentDirWidget QLabel {
++    color: FOREGROUND_COLOR;
++}
++
++nmc--DkThumbPreviewLabel[empty="true"] {
++    background-color: BACKGROUND_COLOR;
++}
++
++QLabel#DkSplashInfoLabel {
++    color: #000;
++}
++
++/* make prefs restart button more obvious */
++QPushButton#infoButton {
++    color: FOREGROUND_COLOR;
++    background-color: rgba(255,255,255,40); /* == default button */
++}
++
++#DkEditDock QFrame {
++    background-color: none; /* undo QDockWidget bg hack */
++}
++
++#DkEditDock #DkPreferenceTabs {
++    background-color: BACKGROUND_COLOR;
++}
++
++#DkEditDock #DkPreferenceTabs > QWidget {
++    background-color: rgba(0,0,0,50);
++}
++
++#DkEditDock #darkManipulator QWidget {
++    background-color: transparent;
++}
++
++#DkEditDock #darkManipulator QCheckBox::indicator {
++    background-color: rgba(255,255,255,40);
++    width: 0.8em;
++    height: 0.8em;
++}
++
++#DkEditDock #darkManipulator QCheckBox::indicator:checked {
++    image: nomacsColorize(:/nomacs/img/check.svg,white);
++}
++
++#DkEditDock #darkManipulator QComboBox QAbstractItemView {
++    background-color: BACKGROUND_COLOR;
++}
++
++#DkEditDock #darkManipulator QComboBox QAbstractItemView::item {
++    background-color: transparent;
++    selection-color: FOREGROUND_COLOR;
++    selection-background-color: rgba(255,255,255,40);
++}
++
++
++/* meta data selection */
++nmc--DkMetaDataSelection > QScrollArea {
++    background-color: BACKGROUND_COLOR;
++}
++nmc--DkMetaDataSelection > QScrollArea > QWidget > QWidget {
++    background-color: rgba(255,255,255,40);
++}
++
++/* ========================================================================
++   LOCAL PATCH - WinUI 3 style overrides (dark)
++   Appended after the Dark theme rules. Everything below only applies
++   while this theme is selected; the stock themes are untouched.
++   Accent spots use ACCENT_COLOR (Windows system accent, see
++   DkThemeManager) so the UI follows the OS accent like WinUI does.
++   ======================================================================== */
++
++* {
++    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
++}
++
++/* ---- menus: rounded, padded, subtle hover (true see-through corners
++        come from the WA_TranslucentBackground set in code) ---- */
++QMenu {
++    background-color: #2c2c2c;
++    border: 1px solid #454545;
++    border-radius: 8px;
++    padding: 4px;
++}
++
++QMenu::item {
++    background-color: transparent;
++    border-radius: 4px;
++    padding: 6px 36px 6px 28px;
++    margin: 1px 2px;
++}
++
++QMenu::item:selected {
++    background-color: rgba(255, 255, 255, 20);
++}
++
++QMenu::item:disabled {
++    color: rgba(255, 255, 255, 90);
++}
++
++QMenu::icon:checked {
++    background-color: ACCENT_COLOR;
++    border-radius: 4px;
++}
++
++QMenu::separator {
++    height: 1px;
++    background-color: rgba(255, 255, 255, 20);
++    border: none;
++    margin: 5px 14px;
++}
++
++QMenuBar {
++    background-color: BACKGROUND_COLOR;
++    border-bottom: 1px solid rgba(255, 255, 255, 18);
++    padding: 2px 4px;
++}
++
++QMenuBar::item {
++    background-color: transparent;
++    border-radius: 4px;
++    padding: 5px 10px;
++}
++
++QMenuBar::item:selected,
++QMenuBar::item:pressed {
++    background-color: rgba(255, 255, 255, 20);
++}
++
++QToolTip {
++    background-color: #2c2c2c;
++    border: 1px solid #454545;
++    border-radius: 4px;
++    padding: 4px 8px;
++}
++
++/* ---- toggle switches instead of checkboxes ---- */
++QCheckBox {
++    spacing: 10px;
++}
++
++QCheckBox::indicator {
++    width: 40px;
++    height: 20px;
++    background-color: transparent;
++    border: none;
++    image: url(":/nomacs/img/switch-off.svg");
++}
++
++QCheckBox::indicator:checked {
++    image: url(":/nomacs/img/switch-on-dark.svg");
++}
++
++QCheckBox::indicator:disabled {
++    image: url(":/nomacs/img/switch-off-disabled.svg");
++}
++
++QCheckBox::indicator:checked:disabled {
++    image: url(":/nomacs/img/switch-on-disabled.svg");
++}
++
++QRadioButton {
++    spacing: 8px;
++}
++
++QRadioButton::indicator {
++    width: 18px;
++    height: 18px;
++    border-radius: 9px;
++    border: 1px solid #9b9b9b;
++    background-color: transparent;
++}
++
++QRadioButton::indicator:checked {
++    background-color: ACCENT_COLOR;
++    border: 1px solid ACCENT_COLOR;
++    image: none;
++}
++
++/* ---- settings page: nav entries ---- */
++QWidget#DkPreferenceTabs {
++    background-color: BACKGROUND_COLOR;
++}
++
++QPushButton#DkTabEntryWidget {
++    margin: 2px 10px;
++    border-radius: 6px;
++    border-left: 3px solid transparent;
++    padding: 8px 14px;
++    font-size: 11pt;
++    font-style: normal;
++    font-weight: 400;
++    text-align: left;
++}
++
++QPushButton#DkTabEntryWidget:hover,
++QPushButton#DkTabEntryWidget:checked:hover {
++    background-color: rgba(255, 255, 255, 16);
++}
++
++QPushButton#DkTabEntryWidget:checked {
++    background-color: rgba(255, 255, 255, 24);
++    border: none;
++    border-left: 3px solid ACCENT_COLOR;
++}
++
++QLabel#DkPreferenceTitle {
++    font-size: 20pt;
++    font-weight: 600;
++    font-style: normal;
++    padding: 18px 24px 10px 24px;
++}
++
++/* ---- settings page: group title above a rounded card
++        (the card is the group's content widget, see DkGroupContent) ---- */
++QLabel#subTitle {
++    font-size: 12pt;
++    font-weight: 600;
++    padding: 14px 2px 7px 2px;
++}
++
++QWidget#DkGroupContent {
++    background-color: #2d2d2d;
++    border: 1px solid rgba(255, 255, 255, 20);
++    border-radius: 8px;
++}
++
++/* ---- controls (settings, batch page, dialogs) ---- */
++nmc--DkPreferenceWidget QPushButton,
++nmc--DkBatchWidget QPushButton,
++QDialog QPushButton {
++    background-color: rgba(255, 255, 255, 16);
++    border: 1px solid rgba(255, 255, 255, 22);
++    border-radius: 4px;
++    padding: 5px 14px;
++    min-height: 20px;
++}
++
++nmc--DkPreferenceWidget QPushButton:hover,
++nmc--DkBatchWidget QPushButton:hover,
++QDialog QPushButton:hover {
++    background-color: rgba(255, 255, 255, 26);
++}
++
++nmc--DkPreferenceWidget QPushButton:pressed,
++nmc--DkBatchWidget QPushButton:pressed,
++QDialog QPushButton:pressed {
++    background-color: rgba(255, 255, 255, 10);
++}
++
++nmc--DkPreferenceWidget QPushButton:disabled,
++nmc--DkBatchWidget QPushButton:disabled,
++QDialog QPushButton:disabled {
++    color: rgba(255, 255, 255, 90);
++    background-color: rgba(255, 255, 255, 8);
++}
++
++nmc--DkPreferenceWidget QComboBox,
++nmc--DkBatchWidget QComboBox,
++QDialog QComboBox,
++nmc--DkPreferenceWidget QLineEdit,
++nmc--DkBatchWidget QLineEdit,
++QDialog QLineEdit,
++nmc--DkPreferenceWidget QSpinBox,
++nmc--DkBatchWidget QSpinBox,
++QDialog QSpinBox,
++nmc--DkPreferenceWidget QDoubleSpinBox,
++QDialog QDoubleSpinBox {
++    background-color: rgba(255, 255, 255, 14);
++    border: 1px solid rgba(255, 255, 255, 22);
++    border-bottom: 1px solid rgba(255, 255, 255, 60);
++    border-radius: 4px;
++    padding: 5px 8px;
++    min-height: 20px;
++    selection-background-color: ACCENT_COLOR;
++}
++
++nmc--DkPreferenceWidget QComboBox:focus,
++nmc--DkBatchWidget QComboBox:focus,
++QDialog QComboBox:focus,
++nmc--DkPreferenceWidget QLineEdit:focus,
++nmc--DkBatchWidget QLineEdit:focus,
++QDialog QLineEdit:focus,
++nmc--DkPreferenceWidget QSpinBox:focus,
++nmc--DkBatchWidget QSpinBox:focus,
++QDialog QSpinBox:focus,
++nmc--DkPreferenceWidget QDoubleSpinBox:focus,
++QDialog QDoubleSpinBox:focus {
++    border-bottom: 2px solid ACCENT_COLOR;
++}
++
++QComboBox::drop-down {
++    border: none;
++    width: 26px;
++}
++
++QComboBox::down-arrow {
++    image: url(":/nomacs/img/down.svg");
++    width: 10px;
++    height: 10px;
++}
++
++QComboBox QAbstractItemView {
++    background-color: #2c2c2c;
++    border: 1px solid #454545;
++    border-radius: 8px;
++    padding: 4px;
++    outline: 0;
++    selection-background-color: rgba(255, 255, 255, 20);
++    selection-color: #ffffff;
++}
++
++QGroupBox {
++    border: 1px solid rgba(255, 255, 255, 20);
++    border-radius: 8px;
++    margin-top: 14px;
++    padding-top: 16px;
++    font-weight: 600;
++}
++
++QGroupBox::title {
++    subcontrol-origin: margin;
++    subcontrol-position: top left;
++    left: 12px;
++    padding: 0 4px;
++}
++
++QSlider::groove:horizontal {
++    height: 4px;
++    border-radius: 2px;
++    background-color: rgba(255, 255, 255, 50);
++}
++
++QSlider::sub-page:horizontal {
++    border-radius: 2px;
++    background-color: ACCENT_COLOR;
++}
++
++QSlider::handle:horizontal {
++    width: 18px;
++    height: 18px;
++    border-radius: 9px;
++    margin: -7px 0;
++    background-color: ACCENT_COLOR;
++}
++
++QProgressBar {
++    border: 1px solid rgba(255, 255, 255, 22);
++    border-radius: 4px;
++    background-color: rgba(255, 255, 255, 10);
++    text-align: center;
++}
++
++QProgressBar::chunk {
++    border-radius: 3px;
++    background-color: ACCENT_COLOR;
++}
++
++/* ---- toolbars, status bar, tabs, thin scrollbars ---- */
++QToolBar {
++    background-color: BACKGROUND_COLOR;
++    border: none;
++    border-bottom: 1px solid rgba(255, 255, 255, 18);
++    padding: 2px 4px;
++    spacing: 2px;
++}
++
++QToolButton {
++    border-radius: 4px;
++    padding: 4px;
++}
++
++QToolButton:hover {
++    background-color: rgba(255, 255, 255, 16);
++}
++
++QToolButton:checked {
++    background-color: rgba(255, 255, 255, 24);
++}
++
++QStatusBar {
++    background-color: BACKGROUND_COLOR;
++    border-top: 1px solid rgba(255, 255, 255, 18);
++}
++
++QTabBar::tab {
++    background-color: transparent;
++    border: none;
++    border-top-left-radius: 6px;
++    border-top-right-radius: 6px;
++    padding: 6px 14px;
++    margin-right: 2px;
++}
++
++QTabBar::tab:selected {
++    background-color: rgba(255, 255, 255, 18);
++}
++
++QTabBar::tab:hover {
++    background-color: rgba(255, 255, 255, 10);
++}
++
++QScrollBar:vertical {
++    background-color: transparent;
++    width: 10px;
++    margin: 0;
++}
++
++QScrollBar::handle:vertical {
++    background-color: rgba(255, 255, 255, 60);
++    border-radius: 5px;
++    min-height: 30px;
++}
++
++QScrollBar:horizontal {
++    background-color: transparent;
++    height: 10px;
++    margin: 0;
++}
++
++QScrollBar::handle:horizontal {
++    background-color: rgba(255, 255, 255, 60);
++    border-radius: 5px;
++    min-width: 30px;
++}
++
++QScrollBar::add-line,
++QScrollBar::sub-line {
++    height: 0;
++    width: 0;
++}
++
++QScrollBar::add-page,
++QScrollBar::sub-page {
++    background-color: transparent;
++}
++
++QListWidget,
++QTreeWidget,
++QTableWidget {
++    border: 1px solid rgba(255, 255, 255, 20);
++    border-radius: 8px;
++    padding: 4px;
++    outline: 0;
++}
++
++QListWidget::item,
++QTreeWidget::item,
++QTableWidget::item {
++    padding: 4px 6px;
++    border-radius: 4px;
++}
++
++QListWidget::item:selected,
++QTreeWidget::item:selected,
++QTableWidget::item:selected {
++    background-color: rgba(255, 255, 255, 22);
++    color: #ffffff;
++}
+diff --git a/ImageLounge/src/themes/WinUI-Light.css b/ImageLounge/src/themes/WinUI-Light.css
+new file mode 100644
+index 0000000..a37ba60
+--- /dev/null
++++ b/ImageLounge/src/themes/WinUI-Light.css
+@@ -0,0 +1,946 @@
++
++/* nomacs-color BACKGROUND_COLOR     #f3f3f3   */
++/* nomacs-color FOREGROUND_COLOR     #333      */
++/* nomacs-color ICON_COLOR           #333      */
++/* nomacs-color HIGHLIGHT_COLOR      #0067c0   */
++/* nomacs-color HUD_BACKGROUND_COLOR #88000000 */
++/* nomacs-color HUD_FOREGROUND_COLOR #fff      */
++/* nomacs-color SLIDESHOW_COLOR      #333      */
++
++/* nomacs-include ":/nomacs/stylesheet.css" */
++
++/* all widgets */
++* {
++    border: none;
++    color: FOREGROUND_COLOR;
++    background-color: none; /* if we missed something it takes the parent bg */
++    selection-color: #fff;
++    selection-background-color: HIGHLIGHT_COLOR;
++}
++
++*:disabled {
++    color: rgba(0,0,0,40);
++}
++
++/* buttons */
++QPushButton {
++    border: 1px solid rgba(0,0,0,60);
++    padding: 4px 20px;
++}
++
++QPushButton:flat,
++QPushButton:flat:disabled {
++    border: none;
++}
++
++QPushButton:default {
++    background-color: rgba(0,0,0,40);
++}
++
++QPushButton:disabled {
++    border: 1px solid rgba(0,0,0,40);
++}
++
++QPushButton:default:disabled {
++    color: rgba(0,0,0,50);
++}
++
++QPushButton:pressed {
++    color: BACKGROUND_COLOR;
++    background-color: rgba(0,0,0,130);
++}
++
++nmc--DkBatchTabButton {
++    min-width: 250px;
++    padding: 10px 20px;
++    padding-bottom: 30px;
++}
++
++QPushButton#DkTabEntryWidget:checked,
++nmc--DkBatchTabButton:checked {
++    background-color: rgba(0, 0, 0, 40);
++    border: none;    /* clear border styles first */
++    border-left: 4px solid HIGHLIGHT_COLOR;
++}
++
++/* push buttons in overlays are broken by default pushbutton */
++nmc--DkCommentWidget QPushButton {
++    padding: 4px;
++}
++
++/* match radio button */
++QCheckBox::indicator {
++    background-color: rgba(0,0,0,40);
++/* nomacs-if-qt-gte-6,0,0 */
++    width:  16px;
++    height: 16px;
++/* nomacs-else */
++    width:  1em;
++    height: 1em;
++/* nomacs-endif */
++    border: 1px transparent rgba(0,0,0,0);
++}
++
++QCheckBox::indicator:checked {
++    image: nomacsColorize(:/nomacs/img/check.svg);
++}
++
++/*
++   draw a circle in qss so background color shows through
++
++   if the numbers/units aren't just right:
++   - qt gives up and draws a rect
++   - qt draws something that is almost a circle
++   - qt doesn't scale the circle with UI resolution
++*/
++QRadioButton::indicator {
++    background-color: rgba(0,0,0,40);
++/* nomacs-if-qt-gte-6,0,0 */
++    width: 16px;
++    height: 16px;
++    border-radius: 8px;
++/* nomacs-else */
++    width:  1em;
++    height: 1em;
++    border-radius:0.49em;
++/* nomacs-endif */
++    border: 1px transparent rgba(0,0,0,0);
++}
++
++QRadioButton::indicator:checked {
++    image: nomacsColorize(:/nomacs/img/radio-checked.svg);
++}
++
++QCheckBox::indicator:pressed,
++QRadioButton::indicator:pressed {
++    background-color: rgba(0,0,0,130);
++}
++
++QDialogButtonBox {
++    dialogbuttonbox-buttons-have-icons: 0;
++}
++
++QGroupBox {
++    border: 1px solid rgba(0,0,0,60); /* == button border */
++    margin-top: 0.5em; /* center title with top border */
++    margin-left: 3px; /* line up left border with title */
++    margin-right: 3px; /* match left */
++    margin-bottom: 1px; /* top margin is large, give back space at the bottom */
++    padding: 6px 4px 4px 4px; /* extra padding at the top for the title */
++}
++
++QGroupBox::title {
++    subcontrol-origin: margin;
++    subcontrol-position: top left;
++    padding: 0; /* place as far left as we can */
++    margin: 0;
++}
++
++QHeaderView,
++QHeaderView::section {
++    background-color: rgba(0, 0, 0, 30);
++}
++
++QHeaderView::section {
++    padding: 2px;
++    border: none;
++    border-right: 1px solid rgba(0,0,0,40);
++}
++
++QTabWidget::pane,
++QAbstractItemView {
++    border: 1px solid rgba(0,0,0,60);
++}
++
++QToolTip {
++    color: BACKGROUND_COLOR;
++    background-color: FOREGROUND_COLOR;
++    opacity: 223;
++    border: 1px solid rgba(255,255,255,128);
++}
++
++QComboBox {
++    padding-left: 4px;  /* fixes 0px padding on Breeze */
++}
++
++QTextEdit,
++QLineEdit,
++QDoubleSpinBox,
++QSpinBox {
++    padding-left: 2px; /* match QComboBox; for some reason actual padding is 2px more */
++}
++
++
++QComboBox QListView::item {
++    padding: 2px;
++}
++
++QComboBox QListView::item:hover {
++    color: none;
++    background-color: none;
++}
++
++QComboBox::drop-down {
++    image: nomacsColorize(:/nomacs/img/down.svg);
++    subcontrol-position: right center;
++    border: none;
++    background-color: none;
++    width:  1.0em;  /* == spinbox arrow */
++    height: 0.5em;
++}
++
++QTextEdit,
++QLineEdit,
++QDoubleSpinBox,
++QSpinBox,
++QComboBox {
++    background-color: nomacsBlend(BACKGROUND_COLOR,255,255,255,128);
++    border: 1px solid rgba(0,0,0,60);
++}
++
++QTextEdit:disabled,
++QLineEdit:disabled,
++QDoubleSpinBox:disabled,
++QSpinBox:disabled,
++QComboBox:disabled {
++    color: rgba(0,0,0,128);
++    background-color: rgba(255,255,255,192);
++    border: 1px solid rgba(0,0,0,40);
++}
++
++/* nomacs-if-qt-gte-6,5,0 */
++QLineEdit,
++QTextEdit,
++QComboBox {
++    placeholder-text-color: rgba(0,0,0,128);
++}
++/* nomacs-endif */
++
++QSpinBox::up-button,
++QSpinBox::down-button,
++QDoubleSpinBox::up-button,
++QDoubleSpinBox::down-button {
++    background-color: nomacsBlend(BACKGROUND_COLOR,0,0,0,40);
++    width:1.0em; /* height defaults to 1/2 */
++}
++
++QSpinBox::up-button:pressed,
++QSpinBox::down-button:pressed,
++QDoubleSpinBox::up-button:pressed,
++QDoubleSpinBox::down-button:pressed {
++    background-color: nomacsBlend(BACKGROUND_COLOR,0,0,0,130);
++}
++
++QSpinBox::up-arrow,
++QDoubleSpinBox::up-arrow {
++    image: nomacsColorize(:/nomacs/img/up.svg);
++    width:1.0em;
++    height:0.5em;
++}
++
++QSpinBox::down-arrow,
++QDoubleSpinBox::down-arrow {
++    image: nomacsColorize(:/nomacs/img/down.svg);
++    width:1.0em;
++    height:0.5em;
++}
++
++QSpinBox::up-arrow:disabled,
++QSpinBox::up-arrow:off,
++QDoubleSpinBox::up-arrow:disabled,
++QDoubleSpinBox::up-arrow:off {
++    image: nomacsColorize(:/nomacs/img/up.svg,nomacsBlend(BACKGROUND_COLOR,0,0,0,60));
++}
++
++QSpinBox::down-arrow:disabled,
++QSpinBox::down-arrow:off,
++QDoubleSpinBox::down-arrow:disabled,
++QDoubleSpinBox::down-arrow:off {
++    image: nomacsColorize(:/nomacs/img/down.svg,nomacsBlend(BACKGROUND_COLOR,0,0,0,60));
++}
++
++QToolBar {
++    border-bottom: 1px solid rgba(0,0,0,60);
++    padding: 4px;
++    spacing: 4px;
++}
++
++QToolBar::handle {
++    background-color: rgba(0,0,0,40);
++}
++
++QToolBar::separator {
++    width:0px;
++}
++
++QTabBar::tab {
++    color: FOREGROUND_COLOR;
++    background-color: nomacsBlend(BACKGROUND_COLOR,0,0,0,40);
++    padding: 4px 20px; /* same as button */
++    border-bottom: 1px solid rgba(0,0,0,100);
++    border-left: 1px solid rgba(0,0,0,60);
++}
++
++QTabBar::tab::selected {
++    background-color: BACKGROUND_COLOR; /* seamless with content bg */
++    border: none;
++    border-top: 1px solid rgba(0,0,0,100);
++    border-left: 1px solid rgba(0,0,0,100);
++    border-right: 1px solid rgba(0,0,0,60);
++}
++
++QTabBar QToolButton {
++    background-color: BACKGROUND_COLOR;
++}
++/* note: we have to blend the color because the button overlaps tabs,
++         which would show through otherwise */
++QTabBar QToolButton:hover:!pressed {
++    background-color: nomacsBlend(BACKGROUND_COLOR,0,0,0,100);
++}
++
++QTabBar QToolButton:pressed {
++    background-color: nomacsBlend(BACKGROUND_COLOR,0,0,0,130);
++}
++
++QTabBar QToolButton:disabled {
++    color: nomacsBlend(BACKGROUND_COLOR,0,0,0,50);
++}
++
++nmc--DkThumbsView {
++    background-color: rgba(0,0,0,40);
++}
++
++nmc--DkBatchWidget,
++nmc--DkPreferenceWidget,
++nmc--DkResizableScrollArea, /* prefs, batch */
++nmc--DkResizableScrollArea > QWidget > QWidget, /* prefs, batch */
++QGraphicsView#DkBaseViewPortDefaultColor, /* image viewer background */
++QWidget#DkPreferenceContent,
++QDockWidget,
++QDockWidget > QWidget,         /* qt internal content widget; but not enough */
++QDockWidget > QWidget QFrame,  /* not ideal, but scroll area selector doesn't work */
++QMainWindow,
++QDialog,
++QToolBar,
++QMenu,
++QMenuBar,
++QTabBar,
++QTabWidget,
++QAbstractItemView {
++    background-color: BACKGROUND_COLOR;
++}
++
++QDockWidget::title {
++    background-color: rgba(0,0,0,40);
++}
++
++QAbstractItemView {
++    alternate-background-color: rgba(0,0,0,20);
++    show-decoration-selected: 1;
++}
++
++QAbstractItemView::item,
++QAbstractItemView::item:alternate {
++    background-color: none; /* use row color */
++    alternate-background-color: transparent; /* "none" doesn't work on Qt6/Windows */
++}
++
++/* neutral colors for menus, hovers, toggles */
++QPushButton:hover:!pressed,
++QToolButton:hover:!pressed,
++QToolButton:checked,
++QMenu::icon:checked,
++QMenuBar::item:selected,
++QMenu::item:selected,
++QMenu::item:selected:checked,
++QAbstractItemView::item:hover {
++    color: BACKGROUND_COLOR;
++    background-color: rgba(0,0,0,100);
++}
++
++/* KDE: buttons could be dark or light depending on system theme, so put them on gray */
++/* NOTE: this is resolved by QStyleHints::setColorScheme() in 6.8.0 in at least KDE 6.2.4 */
++/* nomacs-if-qt-lt-6,8,0 */
++KFileWidget QToolBar {
++  background-color: rgba(0,0,0,128);
++}
++/* nomacs-endif */
++
++/* KDE: text color cannot be set in hover state for some reason, so disable hover state */
++KDirOperatorDetailView::item:hover {
++  color: FOREGROUND_COLOR;
++  background-color: none;
++}
++
++QToolButton:pressed {
++    background-color: rgba(0,0,0,160);
++}
++
++/* neutral colors for static selections */
++QDockWidget QAbstractItemView {
++    selection-color: BACKGROUND_COLOR;
++    selection-background-color: rgba(0,0,0,100);
++}
++
++/* highlight focused widgets */
++QComboBox:selected {
++    /* NOTE: this state is bugged on the "windows" style, */
++    /* https://bugreports.qt.io/browse/QTBUG-131761 */
++    border: 1px solid HIGHLIGHT_COLOR;
++}
++
++QMenu {
++    /* would like menu bg to be different but that isn't possible w/blending */
++    border: solid rgba(0,0,0,60);
++    border-width: 1px 1px 1px 1px;
++}
++
++QMenu::item:checked {
++    color: FOREGROUND_COLOR;
++}
++
++QMenu::item:checked:disabled {
++    color: rgba(0,0,0,40);
++}
++
++QMenu::separator {
++    border-top: 1px solid rgba(0,0,0,60);
++}
++
++/* QMenu styling breaks padding, the fix is different on 5/6 */
++
++/* nomacs-if-qt-gte-6,0,0 */
++    QMenu::icon {
++        right:-5px;
++    }
++/* nomacs-else */
++    QMenu::item {
++        padding: 4px 10px 4px 14px;
++    }
++    QMenu::icon {
++        right:-10px;
++    }
++/* nomacs-endif */
++
++/* scrollbars */
++QScrollBar:vertical { background-color: rgba(0,0,0,0); width: 11px; margin: 0 0 0 0;}
++QScrollBar::handle:vertical { background-color: rgba(0,0,0,60); min-height: 0px;}
++QScrollBar::add-line:vertical { height: 0px; }
++QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background-color: rgba(0,0,0,0); width: 1px;}
++QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
++
++QScrollBar:horizontal {background-color: rgba(0,0,0,0); height: 11px; margin: 0 0 0 0;}
++QScrollBar::handle:horizontal {background-color: rgba(0,0,0,60); min-width: 0px;}
++QScrollBar::add-line:horizontal {width: 0px;}
++QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {background-color: rgba(0,0,0,0); height: 1px;}
++QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {width: 0;}
++
++nmc--DkFolderScrollBar:handle {
++    background-color: rgba(255,255,255,128);
++}
++
++QDockWidget,
++QLabel#batchContentTitle,
++QLabel#batchContentInfo,
++QLabel#statusBarLabel,
++QPushButton#infoButton,
++QListView#resultListView[empty="true"] {
++    color: FOREGROUND_COLOR;
++}
++
++QListWidget#historyList::item:disabled {
++    color: rgba(0,0,0,100);
++}
++
++QLabel#subTitle,
++nmc--DkGroupWidget QCheckBox,
++nmc--DkGroupWidget QRadioButton,
++nmc--DkGroupWidget QLineEdit,
++nmc--DkGroupWidget QLabel {
++    color: FOREGROUND_COLOR;
++}
++
++nmc--DkProfileSummaryWidget {
++    background-color: rgba(0,0,0,40);
++}
++
++/* recent files */
++nmc--DkRecentFilesWidget QScrollArea > QWidget > QWidget {
++    border: none;
++    background-color: BACKGROUND_COLOR;
++}
++
++nmc--DkRecentDirWidget {
++    background-color: rgba(0, 0, 0, 40);
++    border: 1px solid rgba(0, 0, 0, 60);
++}
++
++nmc--DkRecentDirWidget:hover {
++    background-color: rgba(0, 0, 0, 80);
++    border: 1px solid rgba(0, 0, 0, 100);
++}
++
++nmc--DkRecentDirWidget QToolButton {
++    selection-background-color: none;
++}
++
++nmc--DkRecentDirWidget QLabel {
++    color: FOREGROUND_COLOR;
++}
++
++nmc--DkThumbPreviewLabel[empty="true"] {
++    background-color: BACKGROUND_COLOR;
++}
++
++QLabel#DkSplashInfoLabel {
++    color: #000;
++}
++
++/* make prefs restart button more obvious */
++QPushButton#infoButton {
++    color: FOREGROUND_COLOR;
++    background-color: rgba(0,0,0,40); /* == default button */
++}
++
++#DkEditDock QFrame {
++    background-color: none; /* undo QDockWidget bg hack */
++}
++
++#DkEditDock #DkPreferenceTabs {
++    background-color: BACKGROUND_COLOR;
++}
++
++#DkEditDock #DkPreferenceTabs > QWidget {
++    background-color: rgba(0,0,0,129);
++}
++
++#DkEditDock #darkManipulator QWidget {
++    background-color: transparent;
++}
++
++#DkEditDock #darkManipulator QCheckBox::indicator {
++    background-color: rgba(0,0,0,40);
++    width: 0.8em;
++    height: 0.8em;
++}
++
++#DkEditDock #darkManipulator QCheckBox::indicator:checked {
++    image: nomacsColorize(:/nomacs/img/check.svg,white);
++}
++
++#DkEditDock #darkManipulator QComboBox QAbstractItemView {
++    background-color: BACKGROUND_COLOR;
++}
++
++#DkEditDock #darkManipulator QComboBox QAbstractItemView::item {
++    background-color: rgba(0,0,0,128);
++    selection-color: #fff;
++    selection-background-color: rgba(0,0,0,60);
++}
++
++/* meta data selection */
++nmc--DkMetaDataSelection > QScrollArea {
++    background-color: BACKGROUND_COLOR;
++}
++nmc--DkMetaDataSelection > QScrollArea > QWidget > QWidget {
++    background-color: rgba(0,0,0,40);
++}
++
++/* ========================================================================
++   LOCAL PATCH - WinUI 3 style overrides (light)
++   Appended after the Light theme rules. Everything below only applies
++   while this theme is selected; the stock themes are untouched.
++   Accent spots use ACCENT_COLOR (Windows system accent, see
++   DkThemeManager) so the UI follows the OS accent like WinUI does.
++   ======================================================================== */
++
++* {
++    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
++}
++
++/* ---- menus: rounded, padded, subtle hover (true see-through corners
++        come from the WA_TranslucentBackground set in code) ---- */
++QMenu {
++    background-color: #f9f9f9;
++    border: 1px solid #e0e0e0;
++    border-radius: 8px;
++    padding: 4px;
++}
++
++QMenu::item {
++    background-color: transparent;
++    border-radius: 4px;
++    padding: 6px 36px 6px 28px;
++    margin: 1px 2px;
++}
++
++QMenu::item:selected {
++    background-color: rgba(0, 0, 0, 14);
++}
++
++QMenu::item:disabled {
++    color: rgba(0, 0, 0, 90);
++}
++
++QMenu::icon:checked {
++    background-color: ACCENT_COLOR;
++    border-radius: 4px;
++}
++
++QMenu::separator {
++    height: 1px;
++    background-color: rgba(0, 0, 0, 20);
++    border: none;
++    margin: 5px 14px;
++}
++
++QMenuBar {
++    background-color: BACKGROUND_COLOR;
++    border-bottom: 1px solid rgba(0, 0, 0, 20);
++    padding: 2px 4px;
++}
++
++QMenuBar::item {
++    background-color: transparent;
++    border-radius: 4px;
++    padding: 5px 10px;
++}
++
++QMenuBar::item:selected,
++QMenuBar::item:pressed {
++    background-color: rgba(0, 0, 0, 14);
++}
++
++QToolTip {
++    background-color: #f9f9f9;
++    border: 1px solid #e0e0e0;
++    border-radius: 4px;
++    padding: 4px 8px;
++}
++
++/* ---- toggle switches instead of checkboxes ---- */
++QCheckBox {
++    spacing: 10px;
++}
++
++QCheckBox::indicator {
++    width: 40px;
++    height: 20px;
++    background-color: transparent;
++    border: none;
++    image: url(":/nomacs/img/switch-off.svg");
++}
++
++QCheckBox::indicator:checked {
++    image: url(":/nomacs/img/switch-on.svg");
++}
++
++QCheckBox::indicator:disabled {
++    image: url(":/nomacs/img/switch-off-disabled.svg");
++}
++
++QCheckBox::indicator:checked:disabled {
++    image: url(":/nomacs/img/switch-on-disabled.svg");
++}
++
++QRadioButton {
++    spacing: 8px;
++}
++
++QRadioButton::indicator {
++    width: 18px;
++    height: 18px;
++    border-radius: 9px;
++    border: 1px solid #5d5d5d;
++    background-color: transparent;
++}
++
++QRadioButton::indicator:checked {
++    background-color: ACCENT_COLOR;
++    border: 1px solid ACCENT_COLOR;
++    image: none;
++}
++
++/* ---- settings page: nav entries ---- */
++QWidget#DkPreferenceTabs {
++    background-color: BACKGROUND_COLOR;
++}
++
++QPushButton#DkTabEntryWidget {
++    margin: 2px 10px;
++    border-radius: 6px;
++    border-left: 3px solid transparent;
++    padding: 8px 14px;
++    font-size: 11pt;
++    font-style: normal;
++    font-weight: 400;
++    text-align: left;
++    color: #1b1b1b;
++}
++
++QPushButton#DkTabEntryWidget:hover,
++QPushButton#DkTabEntryWidget:checked:hover {
++    background-color: rgba(0, 0, 0, 12);
++}
++
++QPushButton#DkTabEntryWidget:checked {
++    background-color: rgba(0, 0, 0, 18);
++    border: none;
++    border-left: 3px solid ACCENT_COLOR;
++    color: #1b1b1b;
++}
++
++QLabel#DkPreferenceTitle {
++    font-size: 20pt;
++    font-weight: 600;
++    font-style: normal;
++    padding: 18px 24px 10px 24px;
++}
++
++/* ---- settings page: group title above a rounded card
++        (the card is the group's content widget, see DkGroupContent) ---- */
++QLabel#subTitle {
++    font-size: 12pt;
++    font-weight: 600;
++    padding: 14px 2px 7px 2px;
++}
++
++QWidget#DkGroupContent {
++    background-color: #ffffff;
++    border: 1px solid #e7e7e7;
++    border-radius: 8px;
++}
++
++/* ---- controls (settings, batch page, dialogs) ---- */
++nmc--DkPreferenceWidget QPushButton,
++nmc--DkBatchWidget QPushButton,
++QDialog QPushButton {
++    background-color: #ffffff;
++    border: 1px solid #e0e0e0;
++    border-bottom: 1px solid #d0d0d0;
++    border-radius: 4px;
++    padding: 5px 14px;
++    min-height: 20px;
++}
++
++nmc--DkPreferenceWidget QPushButton:hover,
++nmc--DkBatchWidget QPushButton:hover,
++QDialog QPushButton:hover {
++    background-color: #f5f5f5;
++}
++
++nmc--DkPreferenceWidget QPushButton:pressed,
++nmc--DkBatchWidget QPushButton:pressed,
++QDialog QPushButton:pressed {
++    background-color: #f0f0f0;
++}
++
++nmc--DkPreferenceWidget QPushButton:disabled,
++nmc--DkBatchWidget QPushButton:disabled,
++QDialog QPushButton:disabled {
++    color: rgba(0, 0, 0, 90);
++    background-color: #f5f5f5;
++}
++
++nmc--DkPreferenceWidget QComboBox,
++nmc--DkBatchWidget QComboBox,
++QDialog QComboBox,
++nmc--DkPreferenceWidget QLineEdit,
++nmc--DkBatchWidget QLineEdit,
++QDialog QLineEdit,
++nmc--DkPreferenceWidget QSpinBox,
++nmc--DkBatchWidget QSpinBox,
++QDialog QSpinBox,
++nmc--DkPreferenceWidget QDoubleSpinBox,
++QDialog QDoubleSpinBox {
++    background-color: #ffffff;
++    border: 1px solid #e0e0e0;
++    border-bottom: 1px solid #c8c8c8;
++    border-radius: 4px;
++    padding: 5px 8px;
++    min-height: 20px;
++    selection-background-color: ACCENT_COLOR;
++}
++
++nmc--DkPreferenceWidget QComboBox:focus,
++nmc--DkBatchWidget QComboBox:focus,
++QDialog QComboBox:focus,
++nmc--DkPreferenceWidget QLineEdit:focus,
++nmc--DkBatchWidget QLineEdit:focus,
++QDialog QLineEdit:focus,
++nmc--DkPreferenceWidget QSpinBox:focus,
++nmc--DkBatchWidget QSpinBox:focus,
++QDialog QSpinBox:focus,
++nmc--DkPreferenceWidget QDoubleSpinBox:focus,
++QDialog QDoubleSpinBox:focus {
++    border-bottom: 2px solid ACCENT_COLOR;
++}
++
++QComboBox::drop-down {
++    border: none;
++    width: 26px;
++}
++
++QComboBox::down-arrow {
++    image: url(":/nomacs/img/down.svg");
++    width: 10px;
++    height: 10px;
++}
++
++QComboBox QAbstractItemView {
++    background-color: #f9f9f9;
++    border: 1px solid #e0e0e0;
++    border-radius: 8px;
++    padding: 4px;
++    outline: 0;
++    selection-background-color: rgba(0, 0, 0, 14);
++    selection-color: #1b1b1b;
++}
++
++QGroupBox {
++    border: 1px solid #e7e7e7;
++    border-radius: 8px;
++    margin-top: 14px;
++    padding-top: 16px;
++    font-weight: 600;
++}
++
++QGroupBox::title {
++    subcontrol-origin: margin;
++    subcontrol-position: top left;
++    left: 12px;
++    padding: 0 4px;
++}
++
++QSlider::groove:horizontal {
++    height: 4px;
++    border-radius: 2px;
++    background-color: rgba(0, 0, 0, 45);
++}
++
++QSlider::sub-page:horizontal {
++    border-radius: 2px;
++    background-color: ACCENT_COLOR;
++}
++
++QSlider::handle:horizontal {
++    width: 18px;
++    height: 18px;
++    border-radius: 9px;
++    margin: -7px 0;
++    background-color: ACCENT_COLOR;
++}
++
++QProgressBar {
++    border: 1px solid #e0e0e0;
++    border-radius: 4px;
++    background-color: rgba(0, 0, 0, 8);
++    text-align: center;
++}
++
++QProgressBar::chunk {
++    border-radius: 3px;
++    background-color: ACCENT_COLOR;
++}
++
++/* ---- toolbars, status bar, tabs, thin scrollbars ---- */
++QToolBar {
++    background-color: BACKGROUND_COLOR;
++    border: none;
++    border-bottom: 1px solid rgba(0, 0, 0, 20);
++    padding: 2px 4px;
++    spacing: 2px;
++}
++
++QToolButton {
++    border-radius: 4px;
++    padding: 4px;
++}
++
++QToolButton:hover {
++    background-color: rgba(0, 0, 0, 12);
++}
++
++QToolButton:checked {
++    background-color: rgba(0, 0, 0, 18);
++}
++
++QStatusBar {
++    background-color: BACKGROUND_COLOR;
++    border-top: 1px solid rgba(0, 0, 0, 20);
++}
++
++QTabBar::tab {
++    background-color: transparent;
++    border: none;
++    border-top-left-radius: 6px;
++    border-top-right-radius: 6px;
++    padding: 6px 14px;
++    margin-right: 2px;
++}
++
++QTabBar::tab:selected {
++    background-color: rgba(0, 0, 0, 16);
++}
++
++QTabBar::tab:hover {
++    background-color: rgba(0, 0, 0, 8);
++}
++
++QScrollBar:vertical {
++    background-color: transparent;
++    width: 10px;
++    margin: 0;
++}
++
++QScrollBar::handle:vertical {
++    background-color: rgba(0, 0, 0, 55);
++    border-radius: 5px;
++    min-height: 30px;
++}
++
++QScrollBar:horizontal {
++    background-color: transparent;
++    height: 10px;
++    margin: 0;
++}
++
++QScrollBar::handle:horizontal {
++    background-color: rgba(0, 0, 0, 55);
++    border-radius: 5px;
++    min-width: 30px;
++}
++
++QScrollBar::add-line,
++QScrollBar::sub-line {
++    height: 0;
++    width: 0;
++}
++
++QScrollBar::add-page,
++QScrollBar::sub-page {
++    background-color: transparent;
++}
++
++QListWidget,
++QTreeWidget,
++QTableWidget {
++    border: 1px solid #e7e7e7;
++    border-radius: 8px;
++    padding: 4px;
++    outline: 0;
++}
++
++QListWidget::item,
++QTreeWidget::item,
++QTableWidget::item {
++    padding: 4px 6px;
++    border-radius: 4px;
++}
++
++QListWidget::item:selected,
++QTreeWidget::item:selected,
++QTableWidget::item:selected {
++    background-color: rgba(0, 0, 0, 16);
++    color: #1b1b1b;
++}

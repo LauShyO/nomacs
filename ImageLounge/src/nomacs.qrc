@@ -33,6 +33,11 @@
         <file>img/scroll-to-current.svg</file>
         <file>img/export.svg</file>
         <file>img/open.svg</file>
+        <file>img/switch-off.svg</file>
+        <file>img/switch-on.svg</file>
+        <file>img/switch-on-dark.svg</file>
+        <file>img/switch-off-disabled.svg</file>
+        <file>img/switch-on-disabled.svg</file>
         <file>img/thumbs-move.svg</file>
         <file>img/tp-pattern.png</file>
         <file>img/location.svg</file>
