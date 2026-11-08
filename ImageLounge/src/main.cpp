@@ -26,6 +26,7 @@
  *******************************************************************************************************/
 
 #ifdef Q_OS_WIN
+#include <windows.h> // must precede dwmapi.h or its declarations stay hidden
 #include "shlwapi.h"
 #pragma comment(lib, "shlwapi.lib")
 #include <dwmapi.h>
