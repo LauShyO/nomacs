@@ -16,6 +16,12 @@ jobs:
   build:
     runs-on: windows-2025
 
+    # Upstream's cmake reads the dependency bundle location from this
+    # environment variable (AppVeyor sets it in its matrix); without it
+    # the DLL copy steps in WinBuildTarget-qt6.cmake expand to /bin/...
+    env:
+      NOMACS_DEPENDENCIES: ${{ github.workspace }}/3rd-party
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
