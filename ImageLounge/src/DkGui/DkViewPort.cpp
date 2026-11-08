@@ -827,9 +827,18 @@ void DkViewPort::paintEvent(QPaintEvent *event)
 
     if (!mImgStorage.isEmpty()) {
         // usually the QGraphicsView should do this - but we have seen issues(e.g. #706)
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(backgroundBrush());
-        painter.drawRect(QRect(QPoint(), size()));
+        // LOCAL PATCH (frameless transparency): in frameless mode (not full screen) the
+        // frameless window has a translucent backing store, and the area not covered by
+        // the image must stay transparent so what is behind the window shows through.
+        // Filling the whole viewport with the (opaque) theme background brush defeats
+        // that, so skip the fill in this mode only.
+        const bool framelessSeeThrough = DkSettingsManager::param().app().appMode == DkSettings::mode_frameless
+            && !window()->isFullScreen();
+        if (!framelessSeeThrough) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(backgroundBrush());
+            painter.drawRect(QRect(QPoint(), size()));
+        }
 
         painter.setWorldTransform(mWorldMatrix);
 

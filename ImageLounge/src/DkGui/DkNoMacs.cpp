@@ -2259,7 +2259,11 @@ void DkNoMacsFrameless::paintEvent(QPaintEvent *event)
     // }
 
     // paint background color behind main window docks etc
-    const QRegion mask = QRegion(event->rect()).subtracted(centralWidget()->geometry());
+    // LOCAL PATCH (frameless transparency): only do this in full screen. In windowed
+    // frameless mode these strips must stay transparent (translucent backing store),
+    // otherwise the area around the central widget is painted opaque and the window
+    // behind never shows through.
+    const QRegion mask = isFullScreen() ? QRegion(event->rect()).subtracted(centralWidget()->geometry()) : QRegion();
 
     if (!mask.isEmpty()) {
         QPainter painter(this);

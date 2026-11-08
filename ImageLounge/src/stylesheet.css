@@ -206,6 +206,17 @@ nmc--DkNoMacsFrameless nmc--DkThumbsView > QWidget { /* scrollbar background */
     background-color: BACKGROUND_COLOR;
 }
 
+/* LOCAL PATCH (frameless transparency): the image viewport gets the same
+   frameless treatment as the thumbs view above. Without this, the generic
+   QGraphicsView#DkBaseViewPort rules below paint the whole viewport with the
+   opaque theme BACKGROUND_COLOR, so in windowed frameless mode the area not
+   covered by the image can never show what is behind the window.
+   Full screen keeps the theme background (slideshow-style). */
+nmc--DkNoMacsFrameless[fullScreen="false"] QGraphicsView#DkBaseViewPort,
+nmc--DkNoMacsFrameless[fullScreen="false"] QGraphicsView#DkBaseViewPortDefaultColor {
+    background-color: transparent;
+}
+
 QToolButton#DkThumbToolButton::menu-indicator { 
 	image: none; 
 }

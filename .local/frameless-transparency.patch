@@ -1,0 +1,65 @@
+diff --git a/ImageLounge/src/DkGui/DkNoMacs.cpp b/ImageLounge/src/DkGui/DkNoMacs.cpp
+index 49cd4c7..4dda214 100644
+--- a/ImageLounge/src/DkGui/DkNoMacs.cpp
++++ b/ImageLounge/src/DkGui/DkNoMacs.cpp
+@@ -2259,7 +2259,11 @@ void DkNoMacsFrameless::paintEvent(QPaintEvent *event)
+     // }
+ 
+     // paint background color behind main window docks etc
+-    const QRegion mask = QRegion(event->rect()).subtracted(centralWidget()->geometry());
++    // LOCAL PATCH (frameless transparency): only do this in full screen. In windowed
++    // frameless mode these strips must stay transparent (translucent backing store),
++    // otherwise the area around the central widget is painted opaque and the window
++    // behind never shows through.
++    const QRegion mask = isFullScreen() ? QRegion(event->rect()).subtracted(centralWidget()->geometry()) : QRegion();
+ 
+     if (!mask.isEmpty()) {
+         QPainter painter(this);
+diff --git a/ImageLounge/src/DkGui/DkViewPort.cpp b/ImageLounge/src/DkGui/DkViewPort.cpp
+index 6ef655f..75734b4 100644
+--- a/ImageLounge/src/DkGui/DkViewPort.cpp
++++ b/ImageLounge/src/DkGui/DkViewPort.cpp
+@@ -827,9 +827,18 @@ void DkViewPort::paintEvent(QPaintEvent *event)
+ 
+     if (!mImgStorage.isEmpty()) {
+         // usually the QGraphicsView should do this - but we have seen issues(e.g. #706)
+-        painter.setPen(Qt::NoPen);
+-        painter.setBrush(backgroundBrush());
+-        painter.drawRect(QRect(QPoint(), size()));
++        // LOCAL PATCH (frameless transparency): in frameless mode (not full screen) the
++        // frameless window has a translucent backing store, and the area not covered by
++        // the image must stay transparent so what is behind the window shows through.
++        // Filling the whole viewport with the (opaque) theme background brush defeats
++        // that, so skip the fill in this mode only.
++        const bool framelessSeeThrough = DkSettingsManager::param().app().appMode == DkSettings::mode_frameless
++            && !window()->isFullScreen();
++        if (!framelessSeeThrough) {
++            painter.setPen(Qt::NoPen);
++            painter.setBrush(backgroundBrush());
++            painter.drawRect(QRect(QPoint(), size()));
++        }
+ 
+         painter.setWorldTransform(mWorldMatrix);
+ 
+diff --git a/ImageLounge/src/stylesheet.css b/ImageLounge/src/stylesheet.css
+index e92de11..502304b 100644
+--- a/ImageLounge/src/stylesheet.css
++++ b/ImageLounge/src/stylesheet.css
+@@ -206,6 +206,17 @@ nmc--DkNoMacsFrameless nmc--DkThumbsView > QWidget { /* scrollbar background */
+     background-color: BACKGROUND_COLOR;
+ }
+ 
++/* LOCAL PATCH (frameless transparency): the image viewport gets the same
++   frameless treatment as the thumbs view above. Without this, the generic
++   QGraphicsView#DkBaseViewPort rules below paint the whole viewport with the
++   opaque theme BACKGROUND_COLOR, so in windowed frameless mode the area not
++   covered by the image can never show what is behind the window.
++   Full screen keeps the theme background (slideshow-style). */
++nmc--DkNoMacsFrameless[fullScreen="false"] QGraphicsView#DkBaseViewPort,
++nmc--DkNoMacsFrameless[fullScreen="false"] QGraphicsView#DkBaseViewPortDefaultColor {
++    background-color: transparent;
++}
++
+ QToolButton#DkThumbToolButton::menu-indicator { 
+ 	image: none; 
+ }
