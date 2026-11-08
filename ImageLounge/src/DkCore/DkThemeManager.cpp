@@ -41,6 +41,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QStyleHints>
 #include <QWidget>
 
+#ifdef Q_OS_WIN
+#include <dwmapi.h>
+#include <windows.h>
+#pragma comment(lib, "dwmapi.lib")
+#endif
+
 #include <cmath>
 
 namespace nmc
@@ -570,6 +576,15 @@ DkThemeManager::DkThemeManager()
 
     qApp->installEventFilter(this); // receive palette change events
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    // local patch: second trigger for the WinUI pair - when the OS color scheme
+    // flips, re-resolve which variant applies (palette changes above also do this)
+    QObject::connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
+        if (getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
+            applyTheme();
+    });
+#endif
+
     // temp dir is per-instance to prevent one instance from modifying the other
     mTempDirPath = DkUtils::getTemporaryDirPath() + "/theme-" + DkUtils::randomString(6);
     QDir().mkpath(mTempDirPath);
@@ -607,6 +622,12 @@ void DkThemeManager::setCurrentTheme(const QString &themeName) const
 
 void DkThemeManager::applyTheme()
 {
+    // local patch: the WinUI themes are a dark/light pair that follows the OS;
+    // selecting either one resolves to the variant matching the system scheme
+    mEffectiveThemeName = getCurrentThemeName();
+    if (mEffectiveThemeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
+        mEffectiveThemeName = systemPrefersDark() ? QStringLiteral("WinUI-Dark.css") : QStringLiteral("WinUI-Light.css");
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     // Qt 6.8.0 can set the dark/light hint to window manager, we'll set it for the dark/light theme,
     // and let the system theme take the default hint
@@ -616,7 +637,7 @@ void DkThemeManager::applyTheme()
     if (isSystemTheme()) {
         // we could choose scheme based on user colors, however that will also change the title bar color
     } else {
-        QString theme = getCurrentThemeName().toLower();
+        QString theme = mEffectiveThemeName.toLower();
         bool dark = theme.contains("dark"); // TODO: pull from theme CSS and another user option?
         bool light = theme.contains("light");
         if (dark)
@@ -666,7 +687,9 @@ void DkThemeManager::applyTheme()
             slideShow.backgroundColor = slideShow.themeBgdColor;
     }
 
-    QFileInfo themeFileInfo(themeDir(), getCurrentThemeName());
+    QFileInfo themeFileInfo(themeDir(), mEffectiveThemeName);
+    if (!themeFileInfo.exists() && mEffectiveThemeName != getCurrentThemeName())
+        themeFileInfo = QFileInfo(themeDir(), getCurrentThemeName()); // WinUI variant missing: fall back to the selected file
     if (!themeFileInfo.exists()) {
         qWarning() << "[theme] file missing, reverting to default:" << themeFileInfo.absoluteFilePath();
         setCurrentTheme(DkSettingsManager::param().defaultDisplay().themeName);
@@ -798,6 +821,23 @@ void DkThemeManager::applyTheme()
         if (auto *menu = qobject_cast<QMenu *>(widget))
             styleMenuForTheme(menu);
     }
+
+#ifdef Q_OS_WIN
+    // local patch: keep the main window's title bar in sync with the applied
+    // theme on live switches too (main.cpp covers the first show); the
+    // frameless window is excluded by name, it must stay truly transparent
+    if (mEffectiveThemeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive)) {
+        if (QWidget *mainWindow = DkUtils::getMainWindow()) {
+            if (mainWindow->objectName() != QStringLiteral("DkNoMacsFrameless")) {
+                const HWND hwnd = reinterpret_cast<HWND>(mainWindow->winId());
+                const BOOL darkMode = mEffectiveThemeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
+                DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+                const int backdropType = 2; // DWMSBT_MAINWINDOW (Mica)
+                DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+            }
+        }
+    }
+#endif
 
     qInfo() << "theme applied in:" << dt;
 
@@ -1390,8 +1430,30 @@ bool DkThemeManager::isDarkColorScheme() const
     if (isSystemTheme()) {
         auto dpy = DkSettingsManager::param().display();
         return dpy.fgColor.lightness() > dpy.bgColor.lightness();
-    } else
+    } else if (getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
+        return mEffectiveThemeName.toLower().contains("dark"); // local patch: WinUI pair follows the OS
+    else
         return getCurrentThemeName().toLower().contains("dark");
+}
+
+QString DkThemeManager::effectiveThemeName() const
+{
+    return mEffectiveThemeName.isEmpty() ? getCurrentThemeName() : mEffectiveThemeName;
+}
+
+bool DkThemeManager::systemPrefersDark() const
+{
+#ifdef Q_OS_WIN
+    // the app-mode preference Windows itself exposes (Settings > Personalization > Colors)
+    const QSettings personalize(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+                                  QSettings::NativeFormat);
+    bool ok = false;
+    const uint appsUseLight = personalize.value(QStringLiteral("AppsUseLightTheme")).toUInt(&ok);
+    if (ok)
+        return appsUseLight == 0;
+#endif
+    const QPalette &pal = qApp->palette();
+    return pal.color(QPalette::WindowText).lightness() > pal.color(QPalette::Window).lightness();
 }
 
 bool DkThemeManager::eventFilter(QObject *obj, QEvent *event)

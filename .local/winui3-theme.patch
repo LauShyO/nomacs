@@ -1,3 +1,23 @@
+diff --git a/.github/workflows/build-local.yml b/.github/workflows/build-local.yml
+index 3fa8bab..8841c65 100644
+--- a/.github/workflows/build-local.yml
++++ b/.github/workflows/build-local.yml
+@@ -86,12 +86,13 @@ jobs:
+       - name: Publish release
+         uses: softprops/action-gh-release@v2
+         with:
+-          tag_name: 3.23.4-local.1
+-          name: 3.23.4-local.1
++          tag_name: 3.23.4-local.2
++          name: 3.23.4-local.2
+           body: |
+             Local build (LauShyO/nomacs) from upstream master b67b4d7 + local patches:
+ 
+             - Frameless mode (F10, non-fullscreen): the area outside the image is now truly transparent. The viewport no longer paints the opaque theme background over the translucent frameless window, and the main window no longer fills the strips around the central widget. Full screen and normal mode are unchanged. Patch file: .local/frameless-transparency.patch
++            - New WinUI 3 style themes "WinUI Dark" and "WinUI Light" (Settings > General > Nomacs Theme): rounded translucent menus, settings page with navigation entries and group cards, checkboxes as toggle switches, Fluent controls, thin scrollbars. Accent spots follow the Windows system accent color; the main window gets a matching title bar and Mica backdrop. Stock themes are untouched. Patch file: .local/winui3-theme.patch
+ 
+             Asset: nomacs-portable-win.zip (portable, no installer).
+           files: installer/nomacs-portable-win.zip
 diff --git a/ImageLounge/src/DkCore/DkActionManager.cpp b/ImageLounge/src/DkCore/DkActionManager.cpp
 index 3da672a..ac8709f 100644
 --- a/ImageLounge/src/DkCore/DkActionManager.cpp
@@ -24,10 +44,10 @@ index 3da672a..ac8709f 100644
  
  void DkActionManager::init()
 diff --git a/ImageLounge/src/DkCore/DkThemeManager.cpp b/ImageLounge/src/DkCore/DkThemeManager.cpp
-index 5f38608..feac01a 100644
+index 5f38608..fd47228 100644
 --- a/ImageLounge/src/DkCore/DkThemeManager.cpp
 +++ b/ImageLounge/src/DkCore/DkThemeManager.cpp
-@@ -34,6 +34,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+@@ -34,11 +34,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
  #include <QApplication>
  // #include <QDebug>
  #include <QDir>
@@ -36,7 +56,67 @@ index 5f38608..feac01a 100644
  #include <QStyle>
  #include <QStyleFactory>
  #include <QStyleHints>
-@@ -791,11 +793,35 @@ void DkThemeManager::applyTheme()
+ #include <QWidget>
+ 
++#ifdef Q_OS_WIN
++#include <dwmapi.h>
++#include <windows.h>
++#pragma comment(lib, "dwmapi.lib")
++#endif
++
+ #include <cmath>
+ 
+ namespace nmc
+@@ -568,6 +576,15 @@ DkThemeManager::DkThemeManager()
+ 
+     qApp->installEventFilter(this); // receive palette change events
+ 
++#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
++    // local patch: second trigger for the WinUI pair - when the OS color scheme
++    // flips, re-resolve which variant applies (palette changes above also do this)
++    QObject::connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this](Qt::ColorScheme) {
++        if (getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
++            applyTheme();
++    });
++#endif
++
+     // temp dir is per-instance to prevent one instance from modifying the other
+     mTempDirPath = DkUtils::getTemporaryDirPath() + "/theme-" + DkUtils::randomString(6);
+     QDir().mkpath(mTempDirPath);
+@@ -605,6 +622,12 @@ void DkThemeManager::setCurrentTheme(const QString &themeName) const
+ 
+ void DkThemeManager::applyTheme()
+ {
++    // local patch: the WinUI themes are a dark/light pair that follows the OS;
++    // selecting either one resolves to the variant matching the system scheme
++    mEffectiveThemeName = getCurrentThemeName();
++    if (mEffectiveThemeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
++        mEffectiveThemeName = systemPrefersDark() ? QStringLiteral("WinUI-Dark.css") : QStringLiteral("WinUI-Light.css");
++
+ #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+     // Qt 6.8.0 can set the dark/light hint to window manager, we'll set it for the dark/light theme,
+     // and let the system theme take the default hint
+@@ -614,7 +637,7 @@ void DkThemeManager::applyTheme()
+     if (isSystemTheme()) {
+         // we could choose scheme based on user colors, however that will also change the title bar color
+     } else {
+-        QString theme = getCurrentThemeName().toLower();
++        QString theme = mEffectiveThemeName.toLower();
+         bool dark = theme.contains("dark"); // TODO: pull from theme CSS and another user option?
+         bool light = theme.contains("light");
+         if (dark)
+@@ -664,7 +687,9 @@ void DkThemeManager::applyTheme()
+             slideShow.backgroundColor = slideShow.themeBgdColor;
+     }
+ 
+-    QFileInfo themeFileInfo(themeDir(), getCurrentThemeName());
++    QFileInfo themeFileInfo(themeDir(), mEffectiveThemeName);
++    if (!themeFileInfo.exists() && mEffectiveThemeName != getCurrentThemeName())
++        themeFileInfo = QFileInfo(themeDir(), getCurrentThemeName()); // WinUI variant missing: fall back to the selected file
+     if (!themeFileInfo.exists()) {
+         qWarning() << "[theme] file missing, reverting to default:" << themeFileInfo.absoluteFilePath();
+         setCurrentTheme(DkSettingsManager::param().defaultDisplay().themeName);
+@@ -791,11 +816,52 @@ void DkThemeManager::applyTheme()
  
      mOurPaletteChange = false;
  
@@ -45,6 +125,23 @@ index 5f38608..feac01a 100644
 +        if (auto *menu = qobject_cast<QMenu *>(widget))
 +            styleMenuForTheme(menu);
 +    }
++
++#ifdef Q_OS_WIN
++    // local patch: keep the main window's title bar in sync with the applied
++    // theme on live switches too (main.cpp covers the first show); the
++    // frameless window is excluded by name, it must stay truly transparent
++    if (mEffectiveThemeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive)) {
++        if (QWidget *mainWindow = DkUtils::getMainWindow()) {
++            if (mainWindow->objectName() != QStringLiteral("DkNoMacsFrameless")) {
++                const HWND hwnd = reinterpret_cast<HWND>(mainWindow->winId());
++                const BOOL darkMode = mEffectiveThemeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
++                DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
++                const int backdropType = 2; // DWMSBT_MAINWINDOW (Mica)
++                DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
++            }
++        }
++    }
++#endif
 +
      qInfo() << "theme applied in:" << dt;
  
@@ -72,7 +169,7 @@ index 5f38608..feac01a 100644
  void unpolishTree(QObject *object)
  {
      // find widgets that need their style recomputed
-@@ -1180,8 +1206,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
+@@ -1180,8 +1246,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
      QColor highlightAlpha = d.highlightColor;
      highlightAlpha.setAlpha(150);
  
@@ -96,8 +193,42 @@ index 5f38608..feac01a 100644
              {"HUD_HIGHLIGHT_LIGHT", d.hudHighlightLightColor},
              {"HIGHLIGHT_COLOR", d.highlightColor},
              {"HIGHLIGHT_LIGHT", highlightAlpha},
+@@ -1350,10 +1430,32 @@ bool DkThemeManager::isDarkColorScheme() const
+     if (isSystemTheme()) {
+         auto dpy = DkSettingsManager::param().display();
+         return dpy.fgColor.lightness() > dpy.bgColor.lightness();
+-    } else
++    } else if (getCurrentThemeName().startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive))
++        return mEffectiveThemeName.toLower().contains("dark"); // local patch: WinUI pair follows the OS
++    else
+         return getCurrentThemeName().toLower().contains("dark");
+ }
+ 
++QString DkThemeManager::effectiveThemeName() const
++{
++    return mEffectiveThemeName.isEmpty() ? getCurrentThemeName() : mEffectiveThemeName;
++}
++
++bool DkThemeManager::systemPrefersDark() const
++{
++#ifdef Q_OS_WIN
++    // the app-mode preference Windows itself exposes (Settings > Personalization > Colors)
++    const QSettings personalize(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
++                                  QSettings::NativeFormat);
++    bool ok = false;
++    const uint appsUseLight = personalize.value(QStringLiteral("AppsUseLightTheme")).toUInt(&ok);
++    if (ok)
++        return appsUseLight == 0;
++#endif
++    const QPalette &pal = qApp->palette();
++    return pal.color(QPalette::WindowText).lightness() > pal.color(QPalette::Window).lightness();
++}
++
+ bool DkThemeManager::eventFilter(QObject *obj, QEvent *event)
+ {
+     if (event->type() != QEvent::ApplicationPaletteChange)
 diff --git a/ImageLounge/src/DkCore/DkThemeManager.h b/ImageLounge/src/DkCore/DkThemeManager.h
-index 573c07c..fa18450 100644
+index 573c07c..4c7f19d 100644
 --- a/ImageLounge/src/DkCore/DkThemeManager.h
 +++ b/ImageLounge/src/DkCore/DkThemeManager.h
 @@ -32,6 +32,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
@@ -108,7 +239,7 @@ index 573c07c..fa18450 100644
  class QStyle;
  
  namespace nmc
-@@ -104,6 +105,13 @@ public:
+@@ -104,6 +105,19 @@ public:
       */
      void applyTheme();
  
@@ -119,9 +250,26 @@ index 573c07c..fa18450 100644
 +     */
 +    void styleMenuForTheme(QMenu *menu) const;
 +
++    /**
++     * @brief local patch: the theme file actually loaded by the last applyTheme().
++     * Differs from getCurrentThemeName() for the WinUI pair, which follows the OS.
++     */
++    QString effectiveThemeName() const;
++
      /**
       * @brief restyle certain widgets quickly without reapplying the theme
       */
+@@ -206,6 +220,10 @@ protected:
+      */
+     void timerEvent(QTimerEvent *event) override;
+ 
++    // local patch: WinUI pair auto-follow helpers
++    bool systemPrefersDark() const;
++
++    QString mEffectiveThemeName; // theme file resolved by the last applyTheme()
+     QString mDefaultStyle; // style plugin at startup
+     bool mOurPaletteChange = false; // if true, ignore palette change events
+     int mTimerId = -1;
 diff --git a/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp b/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp
 index d33cb69..f65de7c 100644
 --- a/ImageLounge/src/DkGui/DkPreferenceWidgets.cpp
@@ -198,7 +346,7 @@ index 0000000..bd4c8ee
 +  <circle cx="30" cy="10" r="5.5" fill="#ffffff"/>
 +</svg>
 diff --git a/ImageLounge/src/main.cpp b/ImageLounge/src/main.cpp
-index 693a0ae..508a72e 100644
+index 693a0ae..c0960f6 100644
 --- a/ImageLounge/src/main.cpp
 +++ b/ImageLounge/src/main.cpp
 @@ -28,6 +28,8 @@
@@ -219,7 +367,7 @@ index 693a0ae..508a72e 100644
 +    // and the Windows 11 Mica system backdrop on the main window (never on the
 +    // frameless window, which must stay truly transparent)
 +    {
-+        const QString themeName = nmc::DkThemeManager::instance().getCurrentThemeName();
++        const QString themeName = nmc::DkThemeManager::instance().effectiveThemeName();
 +        if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
 +            const HWND hwnd = reinterpret_cast<HWND>(w->winId());
 +            const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;

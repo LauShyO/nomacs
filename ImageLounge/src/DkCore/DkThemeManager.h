@@ -113,6 +113,12 @@ public:
     void styleMenuForTheme(QMenu *menu) const;
 
     /**
+     * @brief local patch: the theme file actually loaded by the last applyTheme().
+     * Differs from getCurrentThemeName() for the WinUI pair, which follows the OS.
+     */
+    QString effectiveThemeName() const;
+
+    /**
      * @brief restyle certain widgets quickly without reapplying the theme
      */
     void unpolish(QObject *rootObject);
@@ -214,6 +220,10 @@ protected:
      */
     void timerEvent(QTimerEvent *event) override;
 
+    // local patch: WinUI pair auto-follow helpers
+    bool systemPrefersDark() const;
+
+    QString mEffectiveThemeName; // theme file resolved by the last applyTheme()
     QString mDefaultStyle; // style plugin at startup
     bool mOurPaletteChange = false; // if true, ignore palette change events
     int mTimerId = -1;

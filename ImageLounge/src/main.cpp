@@ -366,7 +366,7 @@ int main(int argc, char *argv[])
     // and the Windows 11 Mica system backdrop on the main window (never on the
     // frameless window, which must stay truly transparent)
     {
-        const QString themeName = nmc::DkThemeManager::instance().getCurrentThemeName();
+        const QString themeName = nmc::DkThemeManager::instance().effectiveThemeName();
         if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
             const HWND hwnd = reinterpret_cast<HWND>(w->winId());
             const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
