@@ -24,11 +24,15 @@ jobs:
         id: qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.11.1'
+          # Qt 6.11.x uses a new online-repository layout that aqtinstall
+          # (used by install-qt-action) cannot read yet, so the newest
+          # fetchable Qt is 6.10.3. QtSvg ships inside the base package
+          # there, so it is not listed as a module.
+          version: '6.10.3'
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          modules: 'qtimageformats qtsvg qt5compat'
+          modules: 'qtimageformats qt5compat'
 
       - name: Download dependencies (same bundle as upstream AppVeyor build)
         shell: pwsh
@@ -93,6 +97,7 @@ jobs:
 
             - Frameless mode (F10, non-fullscreen): the area outside the image is now truly transparent. The viewport no longer paints the opaque theme background over the translucent frameless window, and the main window no longer fills the strips around the central widget. Full screen and normal mode are unchanged. Patch file: .local/frameless-transparency.patch
             - New WinUI 3 style themes "WinUI Dark" and "WinUI Light" (Settings > General > Nomacs Theme): rounded translucent menus, settings page with navigation entries and group cards, checkboxes as toggle switches, Fluent controls, thin scrollbars. Accent spots follow the Windows system accent color; the main window gets a matching title bar and Mica backdrop. Stock themes are untouched. Patch file: .local/winui3-theme.patch
+            - The WinUI pair follows the Windows dark/light app mode automatically: selecting either WinUI theme loads the variant matching the OS and switches live when the OS scheme flips.
 
             Asset: nomacs-portable-win.zip (portable, no installer).
           files: installer/nomacs-portable-win.zip
