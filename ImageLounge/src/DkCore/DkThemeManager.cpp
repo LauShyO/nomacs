@@ -42,15 +42,29 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QWidget>
 
 #ifdef Q_OS_WIN
-#include <dwmapi.h>
 #include <windows.h>
-#pragma comment(lib, "dwmapi.lib")
 #endif
 
 #include <cmath>
 
 namespace nmc
 {
+#ifdef Q_OS_WIN
+namespace
+{
+// local patch: resolve DwmSetWindowAttribute at run time - including
+// dwmapi.h does not reliably expose the declaration in this project
+HRESULT dwmSetWindowAttribute(HWND hwnd, DWORD attribute, const void *value, DWORD size)
+{
+    using DwmSetWindowAttributeFn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    static const auto fn = []() -> DwmSetWindowAttributeFn {
+        const HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute")) : nullptr;
+    }();
+    return fn ? fn(hwnd, attribute, value, size) : E_NOTIMPL;
+}
+} // namespace
+#endif
 
 struct Point3f {
     float x, y, z;
@@ -831,9 +845,9 @@ void DkThemeManager::applyTheme()
             if (mainWindow->objectName() != QStringLiteral("DkNoMacsFrameless")) {
                 const HWND hwnd = reinterpret_cast<HWND>(mainWindow->winId());
                 const BOOL darkMode = mEffectiveThemeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
-                DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+                dwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
                 const int backdropType = 2; // DWMSBT_MAINWINDOW (Mica)
-                DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+                dwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
             }
         }
     }

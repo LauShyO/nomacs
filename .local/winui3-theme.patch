@@ -76,10 +76,10 @@ index 3da672a..ac8709f 100644
  
  void DkActionManager::init()
 diff --git a/ImageLounge/src/DkCore/DkThemeManager.cpp b/ImageLounge/src/DkCore/DkThemeManager.cpp
-index 5f38608..fd47228 100644
+index 5f38608..629bfb9 100644
 --- a/ImageLounge/src/DkCore/DkThemeManager.cpp
 +++ b/ImageLounge/src/DkCore/DkThemeManager.cpp
-@@ -34,11 +34,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+@@ -34,15 +34,37 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
  #include <QApplication>
  // #include <QDebug>
  #include <QDir>
@@ -91,15 +91,33 @@ index 5f38608..fd47228 100644
  #include <QWidget>
  
 +#ifdef Q_OS_WIN
-+#include <dwmapi.h>
 +#include <windows.h>
-+#pragma comment(lib, "dwmapi.lib")
 +#endif
 +
  #include <cmath>
  
  namespace nmc
-@@ -568,6 +576,15 @@ DkThemeManager::DkThemeManager()
+ {
++#ifdef Q_OS_WIN
++namespace
++{
++// local patch: resolve DwmSetWindowAttribute at run time - including
++// dwmapi.h does not reliably expose the declaration in this project
++HRESULT dwmSetWindowAttribute(HWND hwnd, DWORD attribute, const void *value, DWORD size)
++{
++    using DwmSetWindowAttributeFn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
++    static const auto fn = []() -> DwmSetWindowAttributeFn {
++        const HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
++        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute")) : nullptr;
++    }();
++    return fn ? fn(hwnd, attribute, value, size) : E_NOTIMPL;
++}
++} // namespace
++#endif
+ 
+ struct Point3f {
+     float x, y, z;
+@@ -568,6 +590,15 @@ DkThemeManager::DkThemeManager()
  
      qApp->installEventFilter(this); // receive palette change events
  
@@ -115,7 +133,7 @@ index 5f38608..fd47228 100644
      // temp dir is per-instance to prevent one instance from modifying the other
      mTempDirPath = DkUtils::getTemporaryDirPath() + "/theme-" + DkUtils::randomString(6);
      QDir().mkpath(mTempDirPath);
-@@ -605,6 +622,12 @@ void DkThemeManager::setCurrentTheme(const QString &themeName) const
+@@ -605,6 +636,12 @@ void DkThemeManager::setCurrentTheme(const QString &themeName) const
  
  void DkThemeManager::applyTheme()
  {
@@ -128,7 +146,7 @@ index 5f38608..fd47228 100644
  #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
      // Qt 6.8.0 can set the dark/light hint to window manager, we'll set it for the dark/light theme,
      // and let the system theme take the default hint
-@@ -614,7 +637,7 @@ void DkThemeManager::applyTheme()
+@@ -614,7 +651,7 @@ void DkThemeManager::applyTheme()
      if (isSystemTheme()) {
          // we could choose scheme based on user colors, however that will also change the title bar color
      } else {
@@ -137,7 +155,7 @@ index 5f38608..fd47228 100644
          bool dark = theme.contains("dark"); // TODO: pull from theme CSS and another user option?
          bool light = theme.contains("light");
          if (dark)
-@@ -664,7 +687,9 @@ void DkThemeManager::applyTheme()
+@@ -664,7 +701,9 @@ void DkThemeManager::applyTheme()
              slideShow.backgroundColor = slideShow.themeBgdColor;
      }
  
@@ -148,7 +166,7 @@ index 5f38608..fd47228 100644
      if (!themeFileInfo.exists()) {
          qWarning() << "[theme] file missing, reverting to default:" << themeFileInfo.absoluteFilePath();
          setCurrentTheme(DkSettingsManager::param().defaultDisplay().themeName);
-@@ -791,11 +816,52 @@ void DkThemeManager::applyTheme()
+@@ -791,11 +830,52 @@ void DkThemeManager::applyTheme()
  
      mOurPaletteChange = false;
  
@@ -167,9 +185,9 @@ index 5f38608..fd47228 100644
 +            if (mainWindow->objectName() != QStringLiteral("DkNoMacsFrameless")) {
 +                const HWND hwnd = reinterpret_cast<HWND>(mainWindow->winId());
 +                const BOOL darkMode = mEffectiveThemeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
-+                DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
++                dwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
 +                const int backdropType = 2; // DWMSBT_MAINWINDOW (Mica)
-+                DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
++                dwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
 +            }
 +        }
 +    }
@@ -201,7 +219,7 @@ index 5f38608..fd47228 100644
  void unpolishTree(QObject *object)
  {
      // find widgets that need their style recomputed
-@@ -1180,8 +1246,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
+@@ -1180,8 +1260,22 @@ DkThemeManager::ColorBinding DkThemeManager::cssColors() const
      QColor highlightAlpha = d.highlightColor;
      highlightAlpha.setAlpha(150);
  
@@ -225,7 +243,7 @@ index 5f38608..fd47228 100644
              {"HUD_HIGHLIGHT_LIGHT", d.hudHighlightLightColor},
              {"HIGHLIGHT_COLOR", d.highlightColor},
              {"HIGHLIGHT_LIGHT", highlightAlpha},
-@@ -1350,10 +1430,32 @@ bool DkThemeManager::isDarkColorScheme() const
+@@ -1350,10 +1444,32 @@ bool DkThemeManager::isDarkColorScheme() const
      if (isSystemTheme()) {
          auto dpy = DkSettingsManager::param().display();
          return dpy.fgColor.lightness() > dpy.bgColor.lightness();
@@ -378,22 +396,42 @@ index 0000000..bd4c8ee
 +  <circle cx="30" cy="10" r="5.5" fill="#ffffff"/>
 +</svg>
 diff --git a/ImageLounge/src/main.cpp b/ImageLounge/src/main.cpp
-index 693a0ae..12f0618 100644
+index 693a0ae..ae0ec57 100644
 --- a/ImageLounge/src/main.cpp
 +++ b/ImageLounge/src/main.cpp
-@@ -26,8 +26,11 @@
+@@ -26,6 +26,7 @@
   *******************************************************************************************************/
  
  #ifdef Q_OS_WIN
-+#include <windows.h> // must precede dwmapi.h or its declarations stay hidden
++#include <windows.h>
  #include "shlwapi.h"
  #pragma comment(lib, "shlwapi.lib")
-+#include <dwmapi.h>
-+#pragma comment(lib, "dwmapi.lib")
  
- #if defined(_MSC_BUILD) && !defined(DK_INSTALL) // only final release will be compiled without a CMD
- #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
-@@ -359,6 +362,22 @@ int main(int argc, char *argv[])
+@@ -65,6 +66,23 @@
+ #include <shlobj.h>
+ #endif
+ 
++#ifdef Q_OS_WIN
++namespace
++{
++// local patch: resolve DwmSetWindowAttribute at run time - including
++// dwmapi.h does not reliably expose the declaration in this project
++HRESULT dwmSetWindowAttribute(HWND hwnd, DWORD attribute, const void *value, DWORD size)
++{
++    using DwmSetWindowAttributeFn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
++    static const auto fn = []() -> DwmSetWindowAttributeFn {
++        const HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
++        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute")) : nullptr;
++    }();
++    return fn ? fn(hwnd, attribute, value, size) : E_NOTIMPL;
++}
++} // namespace
++#endif
++
+ #ifdef _MSC_BUILD
+ int main(int argc, wchar_t *argv[])
+ {
+@@ -359,6 +377,22 @@ int main(int argc, char *argv[])
      w->setWindowOpacity(0.0);
  #endif
  
@@ -406,9 +444,9 @@ index 693a0ae..12f0618 100644
 +        if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
 +            const HWND hwnd = reinterpret_cast<HWND>(w->winId());
 +            const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
-+            DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
++            dwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
 +            const int backdropType = 2 /* DWMSBT_MAINWINDOW (Mica) */;
-+            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
++            dwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
 +        }
 +    }
 +#endif

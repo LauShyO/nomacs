@@ -26,11 +26,9 @@
  *******************************************************************************************************/
 
 #ifdef Q_OS_WIN
-#include <windows.h> // must precede dwmapi.h or its declarations stay hidden
+#include <windows.h>
 #include "shlwapi.h"
 #pragma comment(lib, "shlwapi.lib")
-#include <dwmapi.h>
-#pragma comment(lib, "dwmapi.lib")
 
 #if defined(_MSC_BUILD) && !defined(DK_INSTALL) // only final release will be compiled without a CMD
 #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
@@ -66,6 +64,23 @@
 
 #ifdef _MSC_BUILD
 #include <shlobj.h>
+#endif
+
+#ifdef Q_OS_WIN
+namespace
+{
+// local patch: resolve DwmSetWindowAttribute at run time - including
+// dwmapi.h does not reliably expose the declaration in this project
+HRESULT dwmSetWindowAttribute(HWND hwnd, DWORD attribute, const void *value, DWORD size)
+{
+    using DwmSetWindowAttributeFn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    static const auto fn = []() -> DwmSetWindowAttributeFn {
+        const HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(GetProcAddress(dwm, "DwmSetWindowAttribute")) : nullptr;
+    }();
+    return fn ? fn(hwnd, attribute, value, size) : E_NOTIMPL;
+}
+} // namespace
 #endif
 
 #ifdef _MSC_BUILD
@@ -371,9 +386,9 @@ int main(int argc, char *argv[])
         if (themeName.startsWith(QStringLiteral("WinUI"), Qt::CaseInsensitive) && !dynamic_cast<nmc::DkNoMacsFrameless *>(w)) {
             const HWND hwnd = reinterpret_cast<HWND>(w->winId());
             const BOOL darkMode = themeName.contains(QStringLiteral("Dark"), Qt::CaseInsensitive) ? TRUE : FALSE;
-            DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
+            dwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
             const int backdropType = 2 /* DWMSBT_MAINWINDOW (Mica) */;
-            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+            dwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
         }
     }
 #endif
